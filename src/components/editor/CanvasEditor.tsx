@@ -741,14 +741,16 @@ const SinglePageView: React.FC<{
                   color: '#000000',
                 });
               }}
-              className={`text-item-block absolute ${
+              className={`text-item-block absolute transition-all ${
                 !isEditingTextOriginalMode
                   ? 'pointer-events-none'
                   : isEditing
                   ? 'ring-2 ring-[#0071e3] bg-white z-30 shadow-md rounded cursor-text'
                   : isHovered
-                  ? 'ring-1 ring-[#0071e3]/40 bg-[#0071e3]/10 rounded z-10 cursor-pointer'
-                  : 'z-5 hover:bg-[#0071e3]/5 cursor-pointer'
+                  ? 'ring-2 ring-[#0071e3] bg-[#0071e3]/20 rounded z-20 cursor-pointer shadow-xs'
+                  : activeTool === 'editOriginal'
+                  ? 'border border-dashed border-[#0071e3]/50 bg-[#0071e3]/5 hover:bg-[#0071e3]/15 rounded z-10 cursor-pointer'
+                  : 'z-5 hover:bg-[#0071e3]/10 hover:ring-1 hover:ring-[#0071e3]/30 rounded cursor-pointer'
               }`}
               style={{
                 left: `${item.x * zoom}px`,
@@ -756,7 +758,7 @@ const SinglePageView: React.FC<{
                 minWidth: `${Math.max(item.width * zoom, 24)}px`,
                 minHeight: `${Math.max(item.height * zoom, 16)}px`,
               }}
-              title={isEditingTextOriginalMode ? 'Click to edit native PDF text directly' : undefined}
+              title={isEditingTextOriginalMode ? 'Click to edit this text directly in the PDF' : undefined}
             >
               {isEditing ? (
                 <input

@@ -410,103 +410,163 @@ export class PdfRenderService {
         dctx.fillRect(itemX, itemY, itemW, itemH);
       }
 
-      // Scan for remaining non-white pixel clusters (actual diagrams/figures)
+      // Scan for non-white pixel clusters (actual diagrams/figures of any dimension)
       const imgData = dctx.getImageData(0, 0, drawingCanvas.width, drawingCanvas.height);
       const data = imgData.data;
       const w = drawingCanvas.width;
       const h = drawingCanvas.height;
 
-      // Vertical histogram of remaining drawing pixels
-      const rowDarkness = new Array(h).fill(0);
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x += 4) {
-          const idx = (y * w + x) * 4;
-          const r = data[idx];
-          const g = data[idx + 1];
-          const b = data[idx + 2];
-          if (r < 235 || g < 235 || b < 235) {
-            rowDarkness[y]++;
+      interface BoundingBox {
+        minX: number;
+        minY: number;
+        maxX: number;
+        maxY: number;
+        pixelCount: number;
+      }
+
+      const blockSize = 8;
+      const gridW = Math.ceil(w / blockSize);
+      const gridH = Math.ceil(h / blockSize);
+      const hasContentGrid: boolean[] = new Array(gridW * gridH).fill(false);
+
+      for (let gy = 0; gy < gridH; gy++) {
+        for (let gx = 0; gx < gridW; gx++) {
+          const startX = gx * blockSize;
+          const startY = gy * blockSize;
+          const endX = Math.min(startX + blockSize, w);
+          const endY = Math.min(startY + blockSize, h);
+
+          let darkCount = 0;
+          for (let y = startY; y < endY; y += 2) {
+            for (let x = startX; x < endX; x += 2) {
+              const idx = (y * w + x) * 4;
+              const r = data[idx];
+              const g = data[idx + 1];
+              const b = data[idx + 2];
+              if (r < 240 || g < 240 || b < 240) {
+                darkCount++;
+              }
+            }
+          }
+          if (darkCount >= 2) {
+            hasContentGrid[gy * gridW + gx] = true;
           }
         }
       }
 
-      // Find vertical bands of drawing content
-      interface Band {
-        startY: number;
-        endY: number;
-      }
-      const bands: Band[] = [];
-      let inBand = false;
-      let bandStart = 0;
+      // Group adjacent blocks into bounding boxes
+      const visited: boolean[] = new Array(gridW * gridH).fill(false);
+      const rawBoxes: BoundingBox[] = [];
 
-      for (let y = 0; y < h; y++) {
-        const isDark = rowDarkness[y] > 6;
-        if (isDark && !inBand) {
-          inBand = true;
-          bandStart = y;
-        } else if (!isDark && inBand) {
-          inBand = false;
-          if (y - bandStart >= 35) {
-            bands.push({ startY: bandStart, endY: y });
+      for (let gy = 0; gy < gridH; gy++) {
+        for (let gx = 0; gx < gridW; gx++) {
+          const gidx = gy * gridW + gx;
+          if (!hasContentGrid[gidx] || visited[gidx]) continue;
+
+          // Flood fill to find all connected blocks in this graphic
+          let minX = gx * blockSize;
+          let minY = gy * blockSize;
+          let maxX = (gx + 1) * blockSize;
+          let maxY = (gy + 1) * blockSize;
+          let count = 0;
+
+          const queue: [number, number][] = [[gx, gy]];
+          visited[gidx] = true;
+
+          while (queue.length > 0) {
+            const [curX, curY] = queue.shift()!;
+            count++;
+
+            const px0 = curX * blockSize;
+            const py0 = curY * blockSize;
+            const px1 = Math.min((curX + 1) * blockSize, w);
+            const py1 = Math.min((curY + 1) * blockSize, h);
+
+            minX = Math.min(minX, px0);
+            minY = Math.min(minY, py0);
+            maxX = Math.max(maxX, px1);
+            maxY = Math.max(maxY, py1);
+
+            // Check 8-connected neighbors (with 2-block reach to keep components connected)
+            for (let dy = -2; dy <= 2; dy++) {
+              for (let dx = -2; dx <= 2; dx++) {
+                const nx = curX + dx;
+                const ny = curY + dy;
+                if (nx >= 0 && nx < gridW && ny >= 0 && ny < gridH) {
+                  const nidx = ny * gridW + nx;
+                  if (hasContentGrid[nidx] && !visited[nidx]) {
+                    visited[nidx] = true;
+                    queue.push([nx, ny]);
+                  }
+                }
+              }
+            }
+          }
+
+          if (count >= 3 && (maxX - minX >= 16) && (maxY - minY >= 16)) {
+            rawBoxes.push({ minX, minY, maxX, maxY, pixelCount: count });
           }
         }
       }
-      if (inBand && h - bandStart >= 35) {
-        bands.push({ startY: bandStart, endY: h });
+
+      // Merge overlapping or nearby boxes (within 20px)
+      const mergedBoxes: BoundingBox[] = [];
+      for (const box of rawBoxes) {
+        let merged = false;
+        for (const m of mergedBoxes) {
+          const padding = 20;
+          const overlap = !(
+            box.maxX + padding < m.minX ||
+            box.minX - padding > m.maxX ||
+            box.maxY + padding < m.minY ||
+            box.minY - padding > m.maxY
+          );
+          if (overlap) {
+            m.minX = Math.min(m.minX, box.minX);
+            m.minY = Math.min(m.minY, box.minY);
+            m.maxX = Math.max(m.maxX, box.maxX);
+            m.maxY = Math.max(m.maxY, box.maxY);
+            m.pixelCount += box.pixelCount;
+            merged = true;
+            break;
+          }
+        }
+        if (!merged) {
+          mergedBoxes.push({ ...box });
+        }
       }
 
-      // For each drawing band, extract and auto-trim the graphic
-      for (let bIdx = 0; bIdx < bands.length; bIdx++) {
-        const band = bands[bIdx];
-        const bandH = band.endY - band.startY;
-        if (bandH < 35) continue;
+      // Crop and auto-trim each detected figure
+      for (let bIdx = 0; bIdx < mergedBoxes.length; bIdx++) {
+        const box = mergedBoxes[bIdx];
+        const cropX = Math.max(0, box.minX - 6);
+        const cropY = Math.max(0, box.minY - 6);
+        const cropW = Math.min(w - cropX, box.maxX - box.minX + 12);
+        const cropH = Math.min(h - cropY, box.maxY - box.minY + 12);
+
+        if (cropW < 16 || cropH < 16) continue;
 
         const sliceCanvas = document.createElement('canvas');
-        sliceCanvas.width = viewport.width;
-        sliceCanvas.height = bandH;
+        sliceCanvas.width = cropW;
+        sliceCanvas.height = cropH;
         const sctx = sliceCanvas.getContext('2d');
         if (!sctx) continue;
 
-        // Validate the candidate using the text-masked layer. The exported
-        // crop below still uses the original page so labels that belong to a
-        // genuine diagram remain visible, but text on its own can never turn
-        // into a diagram.
-        const visualSlice = document.createElement('canvas');
-        visualSlice.width = viewport.width;
-        visualSlice.height = bandH;
-        const visualCtx = visualSlice.getContext('2d');
-        if (!visualCtx) continue;
-        visualCtx.drawImage(
-          drawingCanvas,
-          0,
-          band.startY,
-          viewport.width,
-          bandH,
-          0,
-          0,
-          viewport.width,
-          bandH
-        );
-        const maskedGraphic = autoTrimCanvas(visualSlice);
-        if (!maskedGraphic || !isMeaningfulVisual(maskedGraphic)) continue;
-
         sctx.drawImage(
           pageCanvas,
+          cropX,
+          cropY,
+          cropW,
+          cropH,
           0,
-          band.startY,
-          viewport.width,
-          bandH,
           0,
-          0,
-          viewport.width,
-          bandH
+          cropW,
+          cropH
         );
 
         const trimmed = autoTrimCanvas(sliceCanvas);
         if (!trimmed) continue;
-
-        // Verify trimmed figure is large enough to be a genuine graphic
-        if (trimmed.width < 24 || trimmed.height < 24) continue;
+        if (trimmed.width < 14 || trimmed.height < 14) continue;
 
         const dataUrl = trimmed.toDataURL('image/png');
         const displayW = Math.min(trimmed.width / (scale / 1.5), 520);
@@ -517,13 +577,13 @@ export class PdfRenderService {
           type: 'image',
           text: '',
           imageUrl: dataUrl,
-          imageWidth: displayW,
-          imageHeight: displayH,
+          imageWidth: Math.round(displayW),
+          imageHeight: Math.round(displayH),
           caption: `Figure (Page ${pageNumber})`,
           pageIndex: pageNumber - 1,
-          orderY: viewport.height / scale - (band.startY + band.endY) / (2 * scale),
-          layoutTopY: viewport.height / scale - band.startY / scale,
-          layoutBottomY: viewport.height / scale - band.endY / scale,
+          orderY: viewport.height / scale - (cropY + cropH / 2) / scale,
+          layoutTopY: viewport.height / scale - cropY / scale,
+          layoutBottomY: viewport.height / scale - (cropY + cropH) / scale,
         });
       }
     } catch (err) {
