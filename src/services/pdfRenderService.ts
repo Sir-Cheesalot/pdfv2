@@ -110,10 +110,9 @@ function autoTrimCanvas(canvas: HTMLCanvasElement): HTMLCanvasElement | null {
 }
 
 /**
- * Decorative fills often survive text masking (for example a coloured heading
- * background). A real visual has either meaningful colour variation or a
- * substantial amount of line/detail contrast; a flat colour alone is not an
- * image or diagram.
+ * Visual validation filter:
+ * To be considered a picture/diagram, it cannot be just one single flat solid color
+ * (unless that color consists of black / black-adjacent drawing strokes & line art).
  */
 function isMeaningfulVisual(canvas: HTMLCanvasElement): boolean {
   const ctx = canvas.getContext('2d');
@@ -123,8 +122,9 @@ function isMeaningfulVisual(canvas: HTMLCanvasElement): boolean {
   const pixels = ctx.getImageData(0, 0, width, height).data;
   const colourBuckets = new Set<string>();
   let nonWhite = 0;
+  let blackOrDarkPixels = 0;
   let transitions = 0;
-  const step = Math.max(1, Math.floor(Math.min(width, height) / 110));
+  const step = Math.max(1, Math.floor(Math.min(width, height) / 100));
 
   for (let y = 0; y < height; y += step) {
     for (let x = 0; x < width; x += step) {
@@ -132,28 +132,56 @@ function isMeaningfulVisual(canvas: HTMLCanvasElement): boolean {
       const r = pixels[index];
       const g = pixels[index + 1];
       const b = pixels[index + 2];
-      const filled = r < 242 || g < 242 || b < 242;
-      if (!filled) continue;
+      const isNotWhite = r < 242 || g < 242 || b < 242;
+      if (!isNotWhite) continue;
 
       nonWhite++;
-      colourBuckets.add(`${Math.floor(r / 40)}-${Math.floor(g / 40)}-${Math.floor(b / 40)}`);
+
+      // Check if pixel is black or dark neutral line / stroke (schematics, plots, sketches)
+      const isBlackOrDark =
+        (r < 75 && g < 75 && b < 75) ||
+        (r < 115 && g < 115 && b < 115 && Math.abs(r - g) < 18 && Math.abs(g - b) < 18);
+
+      if (isBlackOrDark) {
+        blackOrDarkPixels++;
+      } else {
+        // Group chromatic / non-black colors into distinct buckets
+        colourBuckets.add(`${Math.floor(r / 35)}-${Math.floor(g / 35)}-${Math.floor(b / 35)}`);
+      }
 
       if (x + step < width) {
         const next = (y * width + x + step) * 4;
-        const difference = Math.abs(r - pixels[next]) + Math.abs(g - pixels[next + 1]) + Math.abs(b - pixels[next + 2]);
-        if (difference > 75) transitions++;
+        const diff = Math.abs(r - pixels[next]) + Math.abs(g - pixels[next + 1]) + Math.abs(b - pixels[next + 2]);
+        if (diff > 50) transitions++;
       }
       if (y + step < height) {
         const below = ((y + step) * width + x) * 4;
-        const difference = Math.abs(r - pixels[below]) + Math.abs(g - pixels[below + 1]) + Math.abs(b - pixels[below + 2]);
-        if (difference > 75) transitions++;
+        const diff = Math.abs(r - pixels[below]) + Math.abs(g - pixels[below + 1]) + Math.abs(b - pixels[below + 2]);
+        if (diff > 50) transitions++;
       }
     }
   }
 
-  if (nonWhite < 20) return false;
+  // Must have minimal content
+  if (nonWhite < 14) return false;
+
+  // 1. Black / dark line art (schematics, plots, graphs, circuits, curves, sketches) -> Valid!
+  if (blackOrDarkPixels >= 6) {
+    return true;
+  }
+
+  // 2. Colored visuals must have more than 1 color (cannot be just one single flat solid color)
+  if (colourBuckets.size >= 2) {
+    return true;
+  }
+
+  // 3. Detailed gradient/texture variation within same color
   const detailRatio = transitions / nonWhite;
-  return colourBuckets.size >= 3 || detailRatio >= 0.12;
+  if (colourBuckets.size === 1 && detailRatio >= 0.22) {
+    return true;
+  }
+
+  return false;
 }
 
 export class PdfRenderService {
@@ -566,7 +594,7 @@ export class PdfRenderService {
 
         const trimmed = autoTrimCanvas(sliceCanvas);
         if (!trimmed) continue;
-        if (trimmed.width < 14 || trimmed.height < 14) continue;
+        if (trimmed.width < 14 || trimmed.height < 14 || !isMeaningfulVisual(trimmed)) continue;
 
         const dataUrl = trimmed.toDataURL('image/png');
         const displayW = Math.min(trimmed.width / (scale / 1.5), 520);
