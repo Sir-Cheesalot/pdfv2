@@ -409,6 +409,34 @@ export const DocStudio: React.FC<DocStudioProps> = ({
     }
   };
 
+  const handleExportCleanPdf = async () => {
+    setIsExporting(true);
+    try {
+      const baseName = fileName.replace(/\.pdf$/i, '');
+      const bytes = await DocExportService.exportToCleanPdf(paragraphs, baseName);
+      const blob = new Blob([bytes as any], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${baseName}_edited.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      confetti({
+        particleCount: 100,
+        spread: 70,
+        origin: { y: 0.6 },
+      });
+    } catch (err) {
+      console.error('Failed to export clean PDF:', err);
+      alert('Error exporting PDF: ' + (err as Error).message);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const handleExportHtml = () => {
     const baseName = fileName.replace(/\.pdf$/i, '');
     const html = DocExportService.exportToHtml(paragraphs, baseName);
@@ -563,6 +591,16 @@ export const DocStudio: React.FC<DocStudioProps> = ({
           >
             <Download className="w-3.5 h-3.5" />
             <span>TXT</span>
+          </button>
+
+          <button
+            onClick={handleExportCleanPdf}
+            disabled={isExporting}
+            className="flex items-center space-x-1.5 px-3.5 py-1.5 bg-black/5 hover:bg-black/10 text-slate-800 text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
+            title="Export clean vector PDF generated directly from document"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Export PDF</span>
           </button>
 
           <button

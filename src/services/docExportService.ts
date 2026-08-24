@@ -12,6 +12,11 @@ import {
   BorderStyle,
   ImageRun,
 } from 'docx';
+import {
+  PDFDocument,
+  StandardFonts,
+  rgb,
+} from 'pdf-lib';
 import type { DocParagraph } from '../types/pdf';
 
 /**
@@ -27,15 +32,6 @@ function dataUrlToUint8Array(dataUrl: string): Uint8Array {
   return u8;
 }
 
-interface ParsedToken {
-  text: string;
-  bold: boolean;
-  italics: boolean;
-  underline: boolean;
-  subScript: boolean;
-  superScript: boolean;
-}
-
 /**
  * Token-based parser for nested HTML tags: <b>, <strong>, <i>, <em>, <u>, <sub>, <sup>
  */
@@ -43,8 +39,6 @@ function parseFormattedTextRuns(rawText: string): TextRun[] {
   if (!rawText) return [new TextRun('')];
 
   const runs: TextRun[] = [];
-
-  // Match all opening and closing tags or plain text chunks
   const tokenRegex = /(<\/?(?:b|strong|i|em|u|sub|sup)>)/gi;
   const parts = rawText.split(tokenRegex);
 
@@ -79,7 +73,6 @@ function parseFormattedTextRuns(rawText: string): TextRun[] {
     } else if (lower === '</sup>') {
       superScript = false;
     } else {
-      // Plain text with current style state
       runs.push(
         new TextRun({
           text: part,
@@ -196,7 +189,6 @@ export class DocExportService {
             children: rowCells.map((cellContent) => {
               const cellChildren: (Paragraph)[] = [];
 
-              // Check if cell contains an image (e.g. data:image/ or embedded image tag)
               if (cellContent && cellContent.includes('data:image/')) {
                 const imgMatch = cellContent.match(/data:image\/[a-zA-Z]+;base64,[^"'\s\)]+/);
                 if (imgMatch) {
@@ -224,7 +216,6 @@ export class DocExportService {
                   }
                 }
 
-                // Add any accompanying text without the dataUrl
                 const textOnly = cellContent.replace(/!\[.*?\]\(data:image\/.*?\)|data:image\/[a-zA-Z]+;base64,[^"'\s\)]+/, '').trim();
                 if (textOnly) {
                   cellChildren.push(
@@ -313,6 +304,210 @@ export class DocExportService {
     });
 
     return await Packer.toBlob(doc);
+  }
+
+  /**
+   * Export structured document to a PRISTINE Clean Vector PDF (100% real digital vector text, no coverups)
+   */
+  public static async exportToCleanPdf(
+    paragraphs: DocParagraph[],
+    docTitle: string = 'Document'
+  ): Promise<Uint8Array> {
+    const pdfDoc = await PDFDocument.create();
+    const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const helveticaItalic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
+
+    const pageWidth = 595.28; // A4 width
+    const pageHeight = 841.89; // A4 height
+    const margin = 45;
+    const contentWidth = pageWidth - margin * 2;
+
+    let currentPage = pdfDoc.addPage([pageWidth, pageHeight]);
+    let currentY = pageHeight - margin;
+
+    const checkPageBreak = (neededHeight: number) => {
+      if (currentY - neededHeight < margin) {
+        currentPage = pdfDoc.addPage([pageWidth, pageHeight]);
+        currentY = pageHeight - margin;
+      }
+    };
+
+    for (const p of paragraphs) {
+      // 0. IMAGES & FIGURES
+      if (p.type === 'image' && p.imageUrl) {
+        try {
+          const imgBytes = dataUrlToUint8Array(p.imageUrl);
+          let embedded;
+          if (p.imageUrl.startsWith('data:image/png')) {
+            embedded = await pdfDoc.embedPng(imgBytes);
+          } else {
+            embedded = await pdfDoc.embedJpg(imgBytes);
+          }
+
+          const maxW = Math.min(contentWidth, 420);
+          const maxH = 260;
+          const scaleRatio = Math.min(maxW / embedded.width, maxH / embedded.height, 1);
+          const renderW = embedded.width * scaleRatio;
+          const renderH = embedded.height * scaleRatio;
+
+          checkPageBreak(renderH + 30);
+          const imgX = margin + (contentWidth - renderW) / 2;
+          const imgY = currentY - renderH;
+
+          currentPage.drawImage(embedded, {
+            x: imgX,
+            y: imgY,
+            width: renderW,
+            height: renderH,
+          });
+
+          currentY -= renderH + 12;
+
+          if (p.caption) {
+            checkPageBreak(16);
+            const capText = p.caption;
+            const capW = helveticaItalic.widthOfTextAtSize(capText, 9);
+            currentPage.drawText(capText, {
+              x: margin + (contentWidth - capW) / 2,
+              y: currentY,
+              size: 9,
+              font: helveticaItalic,
+              color: rgb(0.4, 0.4, 0.4),
+            });
+            currentY -= 18;
+          }
+        } catch (e) {
+          console.warn('PDF image embed error:', e);
+        }
+        continue;
+      }
+
+      // 1. HEADINGS
+      if (p.type === 'h1' || p.type === 'h2' || p.type === 'h3') {
+        const fontSize = p.type === 'h1' ? 18 : p.type === 'h2' ? 14 : 12;
+        const font = helveticaBold;
+        const cleanText = p.text.replace(/<[^>]+>/g, '');
+
+        checkPageBreak(fontSize + 18);
+        currentY -= p.type === 'h1' ? 16 : 10;
+
+        currentPage.drawText(cleanText, {
+          x: margin,
+          y: currentY,
+          size: fontSize,
+          font,
+          color: rgb(0.1, 0.1, 0.1),
+        });
+
+        currentY -= fontSize + 8;
+        continue;
+      }
+
+      // 2. TABLES
+      if (p.type === 'table' && p.tableData && p.tableData.length > 0) {
+        const rows = p.tableData;
+        const numCols = rows[0]?.length || 1;
+        const colWidth = contentWidth / numCols;
+        const rowHeight = 22;
+
+        checkPageBreak(rows.length * rowHeight + 20);
+
+        for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+          const row = rows[rIdx];
+          const isHeader = rIdx === 0;
+          checkPageBreak(rowHeight);
+
+          // Draw header background
+          if (isHeader) {
+            currentPage.drawRectangle({
+              x: margin,
+              y: currentY - rowHeight,
+              width: contentWidth,
+              height: rowHeight,
+              color: rgb(0.94, 0.95, 0.97),
+            });
+          }
+
+          // Draw cell borders and text
+          for (let cIdx = 0; cIdx < row.length; cIdx++) {
+            const cellX = margin + cIdx * colWidth;
+            const cellY = currentY - rowHeight;
+            const cellContent = row[cIdx] || '';
+            const cellClean = cellContent.replace(/!\[.*?\]\(.*?\)|<[^>]+>/g, '').trim();
+
+            currentPage.drawRectangle({
+              x: cellX,
+              y: cellY,
+              width: colWidth,
+              height: rowHeight,
+              borderColor: rgb(0.8, 0.8, 0.8),
+              borderWidth: 0.5,
+            });
+
+            if (cellClean) {
+              const font = isHeader ? helveticaBold : helvetica;
+              const textFit = cellClean.length > 25 ? cellClean.substring(0, 22) + '...' : cellClean;
+              currentPage.drawText(textFit, {
+                x: cellX + 4,
+                y: cellY + 6,
+                size: 9.5,
+                font,
+                color: rgb(0.15, 0.15, 0.15),
+              });
+            }
+          }
+
+          currentY -= rowHeight;
+        }
+
+        currentY -= 12;
+        continue;
+      }
+
+      // 3. PARAGRAPHS AND LISTS
+      const isBullet = p.type === 'bullet';
+      const isNumbered = p.type === 'numbered';
+      const fontSize = 10;
+      const font = helvetica;
+      const rawClean = p.text.replace(/<[^>]+>/g, '');
+      const prefix = isBullet ? '• ' : '';
+      const textToWrap = prefix + rawClean;
+
+      // Word wrapping
+      const words = textToWrap.split(/\s+/);
+      let line = '';
+      const lines: string[] = [];
+
+      for (const w of words) {
+        const testLine = line ? `${line} ${w}` : w;
+        const testW = font.widthOfTextAtSize(testLine, fontSize);
+        if (testW > contentWidth && line) {
+          lines.push(line);
+          line = w;
+        } else {
+          line = testLine;
+        }
+      }
+      if (line) lines.push(line);
+
+      checkPageBreak(lines.length * 14 + 10);
+
+      for (const l of lines) {
+        currentPage.drawText(l, {
+          x: margin + (isBullet || isNumbered ? 12 : 0),
+          y: currentY,
+          size: fontSize,
+          font,
+          color: rgb(0.2, 0.2, 0.2),
+        });
+        currentY -= 14;
+      }
+
+      currentY -= 6;
+    }
+
+    return await pdfDoc.save();
   }
 
   /**
