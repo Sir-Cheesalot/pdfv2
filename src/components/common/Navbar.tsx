@@ -92,29 +92,29 @@ export const Navbar: React.FC<NavbarProps> = ({
       {/* Segmented Control Mode Tabs */}
       <div className="flex items-center bg-black/5 p-0.5 rounded-xl border border-black/5">
         <button
+          onClick={() => onSelectMode('doc')}
+          className={`flex items-center space-x-1.5 px-3.5 py-1 rounded-lg text-xs font-medium transition-all ${
+            mode === 'doc'
+              ? 'bg-white text-slate-900 shadow-sm font-semibold'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-black/5'
+          }`}
+          title="PDF Replica Doc: Live editable document replica with zero coverups"
+        >
+          <FileText className="w-3.5 h-3.5 text-[#0071e3]" />
+          <span>PDF Replica Doc</span>
+        </button>
+
+        <button
           onClick={() => onSelectMode('edit')}
           className={`flex items-center space-x-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all ${
             mode === 'edit'
               ? 'bg-white text-slate-900 shadow-sm font-semibold'
               : 'text-slate-600 hover:text-slate-900 hover:bg-black/5'
           }`}
-          title="Edit and Annotate PDF"
+          title="Annotate: Draw, shapes, stamps, and watermarks"
         >
           <Edit3 className="w-3.5 h-3.5" />
-          <span>Edit</span>
-        </button>
-
-        <button
-          onClick={() => onSelectMode('doc')}
-          className={`flex items-center space-x-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all ${
-            mode === 'doc'
-              ? 'bg-white text-slate-900 shadow-sm font-semibold'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-black/5'
-          }`}
-          title="Doc Mode: Edit and convert to Microsoft Word (.docx)"
-        >
-          <FileCode className="w-3.5 h-3.5" />
-          <span>Doc / Word</span>
+          <span>Annotate</span>
         </button>
 
         <button
