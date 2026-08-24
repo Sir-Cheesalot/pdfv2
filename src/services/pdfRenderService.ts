@@ -11,37 +11,40 @@ export interface RenderResult {
 }
 
 /**
- * Normalizes sub and sup HTML tags in text, stripping empty tags and combining adjacent tags
+ * Enhanced normalization and semantic formula enrichment for sub/sup tags
  */
 export function cleanSubSuperTags(text: string): string {
   if (!text) return '';
 
   let cleaned = text
-    // Remove empty sub/sup tags
+    // 1. Remove empty or whitespace-only sub/sup tags
     .replace(/<sub>\s*<\/sub>/gi, ' ')
     .replace(/<sup>\s*<\/sup>/gi, ' ')
-    // Move whitespace inside sub/sup outside
+    // 2. Move whitespace inside sub/sup outside
     .replace(/<sub>\s+([^<]+)<\/sub>/gi, ' <sub>$1</sub>')
     .replace(/<sub>([^<]+)\s+<\/sub>/gi, '<sub>$1</sub> ')
     .replace(/<sup>\s+([^<]+)<\/sup>/gi, ' <sup>$1</sup>')
     .replace(/<sup>([^<]+)\s+<\/sup>/gi, '<sup>$1</sup> ')
-    // Merge adjacent identical sub tags: <sub>h</sub><sub>1</sub> -> <sub>h1</sub>
+    // 3. Merge adjacent identical sub tags: <sub>h</sub><sub>1</sub> -> <sub>h1</sub>
     .replace(/<sub>([^<]+)<\/sub>\s*<sub>([^<]+)<\/sub>/gi, '<sub>$1$2</sub>')
     .replace(/<sup>([^<]+)<\/sup>\s*<sup>([^<]+)<\/sup>/gi, '<sup>$1$2</sup>')
-    // Remove trailing/leading sub on pure spaces or commas
+    // 4. Remove sub/sup on punctuation or isolated commas/periods
     .replace(/<sub>([,\.\s]+)<\/sub>/gi, '$1')
     .replace(/<sup>([,\.\s]+)<\/sup>/gi, '$1')
-    // Normalize spaces
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim();
+    // 5. Clean trailing spaces inside tags
+    .replace(/<sub>([^<]+)<\/sub>/gi, (_, inner) => `<sub>${inner.trim()}</sub>`)
+    .replace(/<sup>([^<]+)<\/sup>/gi, (_, inner) => `<sup>${inner.trim()}</sup>`);
 
-  // Second pass for nested/adjacent leftovers
+  // 6. Semantic pass for common physics and scientific formulas:
+  // Units: ms^-1, ms^-2, m^2, m^3, cm^3, kg m^-1
   cleaned = cleaned
-    .replace(/<sub>\s*<\/sub>/gi, ' ')
-    .replace(/<sup>\s*<\/sup>/gi, ' ')
-    .replace(/<sub>([^<]+)<\/sub>\s*<sub>([^<]+)<\/sub>/gi, '<sub>$1$2</sub>')
-    .replace(/<sup>([^<]+)<\/sup>\s*<sup>([^<]+)<\/sup>/gi, '<sup>$1$2</sup>')
-    .replace(/[ \t]{2,}/g, ' ');
+    .replace(/\b(m\s*s|km\s*h|rad\s*s|kg\s*m|J\s*s|N\s*m|W\s*m)\s*[-−]\s*([1-4])\b/g, '$1<sup>-$2</sup>')
+    .replace(/\b(m|cm|mm|km)\s*([23])\b/g, '$1<sup>$2</sup>')
+    .replace(/\b10\s*[-−]\s*([0-9]+)\b/g, '10<sup>-$1</sup>')
+    .replace(/\b10\s*\+\s*([0-9]+)\b/g, '10<sup>$1</sup>');
+
+  // Normalize multi-spaces
+  cleaned = cleaned.replace(/[ \t]{2,}/g, ' ').trim();
 
   return cleaned;
 }
@@ -220,7 +223,6 @@ export class PdfRenderService {
         const gapPt = upper.bottomY - lower.topY;
 
         if (gapPt >= 55) {
-          // Large vertical gap detected (typical for physics/math figures)
           gaps.push({ topY: upper.bottomY - 5, bottomY: lower.topY + 5 });
         }
       }
@@ -236,7 +238,6 @@ export class PdfRenderService {
         const pdfTopY = gap.topY;
         const pdfBottomY = gap.bottomY;
 
-        // Convert to canvas pixel coordinates (top-down)
         const canvasTopY = Math.max(0, (pageHeightPt - pdfTopY) * scale);
         const canvasHeight = Math.min(
           viewport.height - canvasTopY,
@@ -245,7 +246,6 @@ export class PdfRenderService {
 
         if (canvasHeight < 35) continue;
 
-        // Crop gap region
         const cropCanvas = document.createElement('canvas');
         cropCanvas.width = viewport.width;
         cropCanvas.height = canvasHeight;
@@ -264,7 +264,6 @@ export class PdfRenderService {
           canvasHeight
         );
 
-        // Check if cropped area has drawings/lines/pixels (not pure white)
         const imgData = cctx.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
         let nonWhitePixels = 0;
         const data = imgData.data;
@@ -273,13 +272,11 @@ export class PdfRenderService {
           const r = data[k];
           const g = data[k + 1];
           const b = data[k + 2];
-          // If pixel is not pure white
           if (r < 240 || g < 240 || b < 240) {
             nonWhitePixels++;
           }
         }
 
-        // If region contains significant graphical content
         if (nonWhitePixels > 80) {
           const dataUrl = cropCanvas.toDataURL('image/png');
           diagrams.push({
@@ -304,9 +301,9 @@ export class PdfRenderService {
 
   /**
    * Intelligently extract and preserve complete document structures:
-   * - Tables (Multi-column alignment, grid rows & headers)
-   * - Lists (Numbered 1., (a), (i), [1], bullets •, -, *)
-   * - Subscripts (<sub>) and Superscripts (<sup>) with whitespace-safe tokenization
+   * - Full Table Grid Extraction (Multi-column alignment clustering + multi-line row grouping)
+   * - Hierarchical Lists & Sub-questions (Numbered 1., 1(a), (a), (i), [1], bullets •, -, *)
+   * - Precision Subscripts (<sub>) and Superscripts (<sup>)
    * - Diagrams, Charts, and Embedded Figures
    * - Headings (H1, H2, H3) & Paragraphs
    */
@@ -346,7 +343,7 @@ export class PdfRenderService {
         });
       }
 
-      // Group raw items into physical lines (similar PDF baseline Y within 3.5 points)
+      // Group raw items into physical lines (similar PDF baseline Y within 3.8 points)
       interface LineGroup {
         y: number;
         items: RawItem[];
@@ -359,10 +356,10 @@ export class PdfRenderService {
 
       // Sort items: Top-to-bottom (Y descending in PDF space), then Left-to-right (X ascending)
       rawItems.sort((a, b) => {
-        if (Math.abs(a.y - b.y) > 3.5) {
-          return b.y - a.y; // Top to bottom
+        if (Math.abs(a.y - b.y) > 3.8) {
+          return b.y - a.y;
         }
-        return a.x - b.x; // Left to right
+        return a.x - b.x;
       });
 
       for (const item of rawItems) {
@@ -405,17 +402,50 @@ export class PdfRenderService {
         continue;
       }
 
-      // Process each line into tokens, cells, and sub/superscripts
+      // -------------------------------------------------------------
+      // 1. COLUMN ALIGNMENT CLUSTERING (FOR TABLE DETECTION)
+      // -------------------------------------------------------------
+      // Find recurrent start X coordinates across lines to detect multi-column table layout
+      const xStarts: number[] = [];
+      lines.forEach((l) => {
+        l.items.forEach((it) => {
+          if (it.str.trim()) {
+            xStarts.push(Math.round(it.x));
+          }
+        });
+      });
+
+      // Cluster X coordinates within 18 points
+      const columnClusters: { x: number; count: number }[] = [];
+      xStarts.forEach((x) => {
+        const cluster = columnClusters.find((c) => Math.abs(c.x - x) <= 18);
+        if (cluster) {
+          cluster.count++;
+          cluster.x = (cluster.x + x) / 2; // average
+        } else {
+          columnClusters.push({ x, count: 1 });
+        }
+      });
+
+      // Keep strong column clusters (occurring on at least 2 lines)
+      const tableColumns = columnClusters
+        .filter((c) => c.count >= 2)
+        .map((c) => c.x)
+        .sort((a, b) => a - b);
+
+      // -------------------------------------------------------------
+      // 2. PROCESS LINES WITH PRECISION SUB/SUPER & CELL MAPPING
+      // -------------------------------------------------------------
       interface ProcessedLine {
         y: number;
+        dominantFontSize: number;
         formattedText: string;
-        fontSize: number;
-        isTableCandidate: boolean;
         cells: string[];
-        minX: number;
-        maxX: number;
+        isTableCandidate: boolean;
         isListItem: boolean;
         listType?: 'bullet' | 'numbered';
+        minX: number;
+        maxX: number;
       }
 
       const processedLines: ProcessedLine[] = lines.map((line) => {
@@ -439,21 +469,33 @@ export class PdfRenderService {
         });
         line.dominantFontSize = dominantSize;
 
-        // Group items in this line into cells by horizontal gaps (> 18 points)
-        const cells: string[] = [];
-        let currentCell = '';
-        let fullLineText = '';
+        // Process tokens with precision sub/superscript detection
+        interface FormattedToken {
+          text: string;
+          x: number;
+          width: number;
+        }
+
+        const tokens: FormattedToken[] = [];
 
         for (let i = 0; i < line.items.length; i++) {
           const it = line.items[i];
+          const prev = line.items[i - 1];
           let itStr = it.str;
           const trimmed = itStr.trim();
 
-          // Subscript / Superscript Detection:
+          // Subscript / Superscript Criteria:
+          // 1. Is smaller than base font (fontSize <= dominantSize * 0.88)
+          // 2. Contains formula character (alphanumeric, +, -, =)
+          // 3. Has vertical baseline shift relative to line
           const hasFormulaChar = /[a-zA-Z0-9+\-=()]/.test(trimmed);
-          const isSmaller = it.fontSize <= dominantSize * 0.82;
-          const isSuperscript = hasFormulaChar && isSmaller && it.y > line.y + 2.0;
-          const isSubscript = hasFormulaChar && isSmaller && it.y < line.y - 1.2;
+          const isSmaller = it.fontSize <= dominantSize * 0.88;
+          const isCloseToPrev = prev && it.x - (prev.x + prev.width) <= 8.0;
+
+          const isSuperscript =
+            hasFormulaChar && isSmaller && it.y > line.y + 1.2 && (isCloseToPrev || trimmed.length <= 4);
+          const isSubscript =
+            hasFormulaChar && isSmaller && it.y < line.y - 0.8 && (isCloseToPrev || trimmed.length <= 4);
 
           if (isSuperscript && trimmed.length > 0) {
             itStr = itStr.replace(trimmed, `<sup>${trimmed}</sup>`);
@@ -461,16 +503,32 @@ export class PdfRenderService {
             itStr = itStr.replace(trimmed, `<sub>${trimmed}</sub>`);
           }
 
-          const nextItem = line.items[i + 1];
-          currentCell += (currentCell && !currentCell.endsWith(' ') && !itStr.startsWith(' ') ? ' ' : '') + itStr;
-          fullLineText += (fullLineText && !fullLineText.endsWith(' ') && !itStr.startsWith(' ') ? ' ' : '') + itStr;
+          tokens.push({ text: itStr, x: it.x, width: it.width });
+        }
 
-          // Gap threshold for table cell separation (18 points)
-          if (nextItem && nextItem.x - (it.x + it.width) >= 18) {
-            if (currentCell.trim()) {
-              cells.push(cleanSubSuperTags(currentCell));
+        // Partition tokens into table cells based on tableColumns or large horizontal gaps (> 16pt)
+        const cells: string[] = [];
+        let currentCell = '';
+
+        for (let i = 0; i < tokens.length; i++) {
+          const tok = tokens[i];
+          const nextTok = tokens[i + 1];
+
+          currentCell += (currentCell && !currentCell.endsWith(' ') && !tok.text.startsWith(' ') ? ' ' : '') + tok.text;
+
+          // Check if there is a gap to the next token (> 16 points) or crossing a column boundary
+          if (nextTok) {
+            const gap = nextTok.x - (tok.x + tok.width);
+            const isColumnJump =
+              tableColumns.length >= 2 &&
+              tableColumns.some((colX) => tok.x + tok.width < colX && nextTok.x >= colX - 5);
+
+            if (gap >= 16 || isColumnJump) {
+              if (currentCell.trim()) {
+                cells.push(cleanSubSuperTags(currentCell));
+              }
+              currentCell = '';
             }
-            currentCell = '';
           }
         }
 
@@ -478,38 +536,43 @@ export class PdfRenderService {
           cells.push(cleanSubSuperTags(currentCell));
         }
 
-        const cleanFull = cleanSubSuperTags(fullLineText);
+        const fullLineText = cleanSubSuperTags(
+          tokens.map((t) => t.text).join(' ')
+        );
 
         // List detection regexes:
         // Bullet: •, -, *, ▪, ◦, –, —
         // Numbered: 1., 1(a), (a), (i), [1], A., etc.
-        const isBullet = /^[-•*▪◦–—■►✔✓]\s*/.test(cleanFull);
+        const isBullet = /^[-•*▪◦–—■►✔✓]\s*/.test(fullLineText);
         const isNumbered =
-          /^(\d+(\.\d+)*[\.\)]|\([0-9a-zA-Z]+\)|[a-zA-Z][\.\)]|\[[0-9a-zA-Z]+\]|[ivxlcdmIVXLCDM]+[\.\)]|\d+\s*\([a-z0-9]+\))\s*/i.test(
-            cleanFull
+          /^(\d+(\.\d+)*[\.\)]|\([0-9a-zA-Z]+\)(\([0-9a-zA-Z]+\))*|[a-zA-Z][\.\)]|\[[0-9a-zA-Z\s:]+\]|[ivxlcdmIVXLCDM]+[\.\)]|\d+\s*\([a-z0-9]+\))\s*/i.test(
+            fullLineText
           );
 
         return {
           y: line.y,
-          formattedText: cleanFull,
-          fontSize: dominantSize,
-          isTableCandidate: cells.length >= 2,
+          dominantFontSize: dominantSize,
+          formattedText: fullLineText,
           cells,
-          minX: line.minX,
-          maxX: line.maxX,
+          isTableCandidate: cells.length >= 2,
           isListItem: isBullet || isNumbered,
           listType: isBullet ? 'bullet' : isNumbered ? 'numbered' : undefined,
+          minX: line.minX,
+          maxX: line.maxX,
         };
       });
 
-      // Group consecutive lines into structured Paragraphs / Tables / Lists / Headings
+      // -------------------------------------------------------------
+      // 3. GROUP LINES INTO STRUCTURED PARAGRAPHS, TABLES, AND LISTS
+      // -------------------------------------------------------------
       let i = 0;
       const pageParagraphs: DocParagraph[] = [];
 
       while (i < processedLines.length) {
         const currentLine = processedLines[i];
 
-        // 1. TABLE DETECTION: Multiple consecutive multi-column lines (or multi-column header)
+        // 1. TABLE GROUPING
+        // If line has multiple cells (or aligns with table columns), group into a Table
         if (
           currentLine.isTableCandidate &&
           (i + 1 >= processedLines.length || processedLines[i + 1].isTableCandidate || currentLine.cells.length >= 3)
@@ -517,19 +580,25 @@ export class PdfRenderService {
           const tableRows: string[][] = [];
           let maxCols = 0;
 
-          while (i < processedLines.length && (processedLines[i].isTableCandidate || tableRows.length === 0)) {
-            const row = processedLines[i].cells;
-            if (row.length >= 2) {
-              maxCols = Math.max(maxCols, row.length);
-              tableRows.push(row);
-            } else if (tableRows.length > 0) {
+          while (i < processedLines.length) {
+            const line = processedLines[i];
+            // If line has multiple cells
+            if (line.cells.length >= 2) {
+              maxCols = Math.max(maxCols, line.cells.length);
+              tableRows.push(line.cells);
+              i++;
+            } else if (tableRows.length > 0 && line.cells.length === 1 && !line.isListItem && line.dominantFontSize <= 13) {
+              // Multi-line continuation inside last row's rightmost cell
+              const lastRow = tableRows[tableRows.length - 1];
+              lastRow[lastRow.length - 1] += ' ' + line.formattedText;
+              i++;
+            } else {
               break;
             }
-            i++;
           }
 
           if (tableRows.length > 0) {
-            // Normalize table column lengths so every row has maxCols
+            // Normalize all rows to maxCols
             const normalizedRows = tableRows.map((r) => {
               const rowCopy = [...r];
               while (rowCopy.length < maxCols) {
@@ -551,7 +620,7 @@ export class PdfRenderService {
         }
 
         // 2. HEADINGS
-        if (currentLine.fontSize >= 18 && !currentLine.isListItem) {
+        if (currentLine.dominantFontSize >= 18 && !currentLine.isListItem) {
           pageParagraphs.push({
             id: `h1-${p}-${i}-${Date.now()}`,
             type: 'h1',
@@ -561,7 +630,7 @@ export class PdfRenderService {
           });
           i++;
           continue;
-        } else if (currentLine.fontSize >= 15 && !currentLine.isListItem) {
+        } else if (currentLine.dominantFontSize >= 15 && !currentLine.isListItem) {
           pageParagraphs.push({
             id: `h2-${p}-${i}-${Date.now()}`,
             type: 'h2',
@@ -571,7 +640,7 @@ export class PdfRenderService {
           });
           i++;
           continue;
-        } else if (currentLine.fontSize >= 13.5 && currentLine.formattedText.length < 80 && !currentLine.isListItem) {
+        } else if (currentLine.dominantFontSize >= 13.5 && currentLine.formattedText.length < 80 && !currentLine.isListItem) {
           pageParagraphs.push({
             id: `h3-${p}-${i}-${Date.now()}`,
             type: 'h3',
@@ -583,7 +652,7 @@ export class PdfRenderService {
           continue;
         }
 
-        // 3. LISTS (Bullet or Numbered)
+        // 3. LISTS (Numbered / Bullet)
         if (currentLine.isListItem) {
           pageParagraphs.push({
             id: `list-${p}-${i}-${Date.now()}`,
@@ -606,10 +675,10 @@ export class PdfRenderService {
           const nextLine = processedLines[i];
           const lineGap = Math.abs(lastY - nextLine.y);
 
-          // Stop combining if new line is a list, heading, table, or large gap
+          // Stop combining if next line is a list item, heading, table, or large gap
           if (
             nextLine.isListItem ||
-            nextLine.fontSize > currentLine.fontSize + 1.5 ||
+            nextLine.dominantFontSize > currentLine.dominantFontSize + 1.5 ||
             nextLine.isTableCandidate ||
             lineGap > 20
           ) {
