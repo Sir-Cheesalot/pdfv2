@@ -26,7 +26,7 @@ export function usePdfDocument() {
   const [metadata, setMetadata] = useState<PdfMetadata>({});
   const [watermark, setWatermark] = useState<WatermarkConfig | null>(null);
 
-  const [mode, setMode] = useState<EditorMode>('edit');
+  const [mode, setMode] = useState<EditorMode>('doc');
   const [zoom, setZoom] = useState<number>(1.25);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
@@ -107,6 +107,7 @@ export function usePdfDocument() {
       setAnnotations({});
       setMetadata(loadedMeta);
       setWatermark(null);
+      setMode('doc');
 
       // Initialize history
       setHistory([{ pages: loadedPages, annotations: {} }]);
