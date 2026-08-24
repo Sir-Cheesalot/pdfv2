@@ -1,4 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist';
+import { recognize } from 'tesseract.js';
 import type { ExtractedTextItem, DocParagraph } from '../types/pdf';
 
 // Point to local worker in public directory
@@ -87,6 +88,53 @@ export class PdfRenderService {
   }
 
   /**
+   * Run Tesseract OCR on a canvas or image data URL to extract text from images
+   */
+  public static async runOcrOnImage(
+    imageSource: string | HTMLCanvasElement,
+    onProgress?: (progress: number) => void
+  ): Promise<{
+    text: string;
+    words: { text: string; bbox: { x0: number; y0: number; x1: number; y1: number } }[];
+  }> {
+    try {
+      const res = await recognize(imageSource, 'eng', {
+        logger: (m) => {
+          if (m.status === 'recognizing text' && m.progress !== undefined) {
+            onProgress?.(m.progress);
+          }
+        },
+      });
+
+      const dataAny = res.data as any;
+      let wordsList: any[] = [];
+      if (Array.isArray(dataAny.words)) {
+        wordsList = dataAny.words;
+      } else if (Array.isArray(dataAny.lines)) {
+        wordsList = dataAny.lines.flatMap((l: any) => l.words || []);
+      }
+
+      const words = wordsList.map((w: any) => ({
+        text: w.text || '',
+        bbox: {
+          x0: w.bbox?.x0 ?? 0,
+          y0: w.bbox?.y0 ?? 0,
+          x1: w.bbox?.x1 ?? 0,
+          y1: w.bbox?.y1 ?? 0,
+        },
+      }));
+
+      return {
+        text: res.data.text || '',
+        words,
+      };
+    } catch (err) {
+      console.error('Tesseract OCR error:', err);
+      return { text: '', words: [] };
+    }
+  }
+
+  /**
    * Render a specific page to a Canvas element with device pixel ratio scaling
    */
   public static async renderPageToCanvas(
@@ -132,6 +180,8 @@ export class PdfRenderService {
 
   /**
    * Extract all individual text items and bounding boxes from a page ("Unvectorize")
+   * For digital PDFs: Extracts vector text glyphs directly.
+   * For scanned / raster PDFs: Uses Tesseract OCR to vectorize image text into editable items.
    */
   public static async extractPageTextItems(
     pdfDoc: pdfjsLib.PDFDocumentProxy,
@@ -142,6 +192,7 @@ export class PdfRenderService {
     const textContent = await page.getTextContent();
     const items: ExtractedTextItem[] = [];
 
+    // 1. Digital PDF Vector Extraction
     for (let i = 0; i < textContent.items.length; i++) {
       const item = textContent.items[i];
       if (!('str' in item) || !item.str || !item.str.trim()) continue;
@@ -169,6 +220,41 @@ export class PdfRenderService {
       });
     }
 
+    // 2. Scanned / Image PDF Vectorization via Tesseract OCR
+    if (items.length === 0) {
+      try {
+        const scale = 2.0;
+        const ocrViewport = page.getViewport({ scale });
+        const canvas = document.createElement('canvas');
+        canvas.width = ocrViewport.width;
+        canvas.height = ocrViewport.height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, ocrViewport.width, ocrViewport.height);
+          await (page.render({ canvasContext: ctx, viewport: ocrViewport } as any).promise);
+
+          const ocrResult = await this.runOcrOnImage(canvas);
+          ocrResult.words.forEach((w, idx) => {
+            if (w.text && w.text.trim()) {
+              items.push({
+                id: `ocr-${pageNumber}-${idx}-${Date.now()}`,
+                str: w.text,
+                x: w.bbox.x0 / scale,
+                y: w.bbox.y0 / scale,
+                width: (w.bbox.x1 - w.bbox.x0) / scale,
+                height: (w.bbox.y1 - w.bbox.y0) / scale,
+                fontSize: Math.round(((w.bbox.y1 - w.bbox.y0) / scale) * 0.85) || 12,
+                fontName: 'Helvetica',
+              });
+            }
+          });
+        }
+      } catch (ocrErr) {
+        console.warn('OCR vectorization note for page', pageNumber, ocrErr);
+      }
+    }
+
     return items;
   }
 
@@ -187,7 +273,6 @@ export class PdfRenderService {
       const scale = 1.5;
       const viewport = page.getViewport({ scale });
 
-      // 1. Render page to offscreen canvas to inspect and crop diagram regions
       const pageCanvas = document.createElement('canvas');
       pageCanvas.width = viewport.width;
       pageCanvas.height = viewport.height;
@@ -198,25 +283,20 @@ export class PdfRenderService {
       pctx.fillRect(0, 0, viewport.width, viewport.height);
       await (page.render({ canvasContext: pctx, viewport } as any).promise);
 
-      // 2. Identify large vertical gaps between text lines that contain figures/drawings
       const pageHeightPt = viewport.height / scale;
-
-      // Sort text lines by PDF Y (top to bottom)
       const sortedY = [...textLineYCoordinates].sort((a, b) => b.topY - a.topY);
 
       interface GapRegion {
-        topY: number; // PDF space
-        bottomY: number; // PDF space
+        topY: number;
+        bottomY: number;
       }
 
       const gaps: GapRegion[] = [];
 
-      // Check gap between top of page and first text line
       if (sortedY.length > 0 && pageHeightPt - sortedY[0].topY > 100) {
         gaps.push({ topY: pageHeightPt - 30, bottomY: sortedY[0].topY + 10 });
       }
 
-      // Check gaps between consecutive text lines
       for (let i = 0; i < sortedY.length - 1; i++) {
         const upper = sortedY[i];
         const lower = sortedY[i + 1];
@@ -227,12 +307,10 @@ export class PdfRenderService {
         }
       }
 
-      // Check gap between last text line and bottom of page
       if (sortedY.length > 0 && sortedY[sortedY.length - 1].bottomY > 100) {
         gaps.push({ topY: sortedY[sortedY.length - 1].bottomY - 10, bottomY: 30 });
       }
 
-      // 3. For each gap region, crop the canvas area and verify it has visual content (not pure white)
       for (let gIdx = 0; gIdx < gaps.length; gIdx++) {
         const gap = gaps[gIdx];
         const pdfTopY = gap.topY;
@@ -301,6 +379,8 @@ export class PdfRenderService {
 
   /**
    * Intelligently extract and preserve complete document structures:
+   * - Digital PDFs: De-encrypt & unvectorize content stream directly
+   * - Scanned/Image PDFs: Uses Tesseract OCR to vectorize image to text
    * - Full Table Grid Extraction (Multi-column alignment clustering + multi-line row grouping)
    * - Hierarchical Lists & Sub-questions (Numbered 1., 1(a), (a), (i), [1], bullets •, -, *)
    * - Precision Subscripts (<sub>) and Superscripts (<sup>)
@@ -313,8 +393,7 @@ export class PdfRenderService {
     const paragraphs: DocParagraph[] = [];
 
     for (let p = 1; p <= pdfDoc.numPages; p++) {
-      const page = await pdfDoc.getPage(p);
-      const textContent = await page.getTextContent();
+      const rawTextItems = await this.extractPageTextItems(pdfDoc, p);
 
       interface RawItem {
         str: string;
@@ -326,22 +405,15 @@ export class PdfRenderService {
         fontName?: string;
       }
 
-      const rawItems: RawItem[] = [];
-
-      for (const item of textContent.items) {
-        if (!('str' in item) || !item.str) continue;
-        const tx = item.transform;
-        const fontSize = Math.round(Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1])) || 12;
-        rawItems.push({
-          str: item.str,
-          x: tx[4],
-          y: tx[5],
-          width: item.width || 0,
-          height: item.height || fontSize,
-          fontSize,
-          fontName: item.fontName,
-        });
-      }
+      const rawItems: RawItem[] = rawTextItems.map((it) => ({
+        str: it.str,
+        x: it.x,
+        y: 842 - it.y - it.fontSize, // Approximate baseline Y
+        width: it.width,
+        height: it.height,
+        fontSize: it.fontSize,
+        fontName: it.fontName,
+      }));
 
       // Group raw items into physical lines (similar PDF baseline Y within 3.8 points)
       interface LineGroup {
@@ -354,7 +426,6 @@ export class PdfRenderService {
 
       const lines: LineGroup[] = [];
 
-      // Sort items: Top-to-bottom (Y descending in PDF space), then Left-to-right (X ascending)
       rawItems.sort((a, b) => {
         if (Math.abs(a.y - b.y) > 3.8) {
           return b.y - a.y;
@@ -379,16 +450,13 @@ export class PdfRenderService {
         line.maxX = Math.max(line.maxX, item.x + item.width);
       }
 
-      // Re-sort lines from top to bottom
       lines.sort((a, b) => b.y - a.y);
 
-      // Collect line coordinates for diagram detection
       const textLineBounds = lines.map((l) => ({
         topY: l.y + l.dominantFontSize,
         bottomY: l.y,
       }));
 
-      // Extract visual diagrams and figures for this page
       const pageDiagrams = await this.extractPageDiagramsAndFigures(
         pdfDoc,
         p,
@@ -402,10 +470,7 @@ export class PdfRenderService {
         continue;
       }
 
-      // -------------------------------------------------------------
-      // 1. COLUMN ALIGNMENT CLUSTERING (FOR TABLE DETECTION)
-      // -------------------------------------------------------------
-      // Find recurrent start X coordinates across lines to detect multi-column table layout
+      // Column Alignment Clustering (For Table Detection)
       const xStarts: number[] = [];
       lines.forEach((l) => {
         l.items.forEach((it) => {
@@ -415,27 +480,22 @@ export class PdfRenderService {
         });
       });
 
-      // Cluster X coordinates within 18 points
       const columnClusters: { x: number; count: number }[] = [];
       xStarts.forEach((x) => {
         const cluster = columnClusters.find((c) => Math.abs(c.x - x) <= 18);
         if (cluster) {
           cluster.count++;
-          cluster.x = (cluster.x + x) / 2; // average
+          cluster.x = (cluster.x + x) / 2;
         } else {
           columnClusters.push({ x, count: 1 });
         }
       });
 
-      // Keep strong column clusters (occurring on at least 2 lines)
       const tableColumns = columnClusters
         .filter((c) => c.count >= 2)
         .map((c) => c.x)
         .sort((a, b) => a - b);
 
-      // -------------------------------------------------------------
-      // 2. PROCESS LINES WITH PRECISION SUB/SUPER & CELL MAPPING
-      // -------------------------------------------------------------
       interface ProcessedLine {
         y: number;
         dominantFontSize: number;
@@ -451,7 +511,6 @@ export class PdfRenderService {
       const processedLines: ProcessedLine[] = lines.map((line) => {
         line.items.sort((a, b) => a.x - b.x);
 
-        // Find dominant font size
         const fontCounts: Record<number, number> = {};
         line.items.forEach((it) => {
           if (it.str.trim()) {
@@ -469,7 +528,6 @@ export class PdfRenderService {
         });
         line.dominantFontSize = dominantSize;
 
-        // Process tokens with precision sub/superscript detection
         interface FormattedToken {
           text: string;
           x: number;
@@ -484,10 +542,6 @@ export class PdfRenderService {
           let itStr = it.str;
           const trimmed = itStr.trim();
 
-          // Subscript / Superscript Criteria:
-          // 1. Is smaller than base font (fontSize <= dominantSize * 0.88)
-          // 2. Contains formula character (alphanumeric, +, -, =)
-          // 3. Has vertical baseline shift relative to line
           const hasFormulaChar = /[a-zA-Z0-9+\-=()]/.test(trimmed);
           const isSmaller = it.fontSize <= dominantSize * 0.88;
           const isCloseToPrev = prev && it.x - (prev.x + prev.width) <= 8.0;
@@ -506,7 +560,6 @@ export class PdfRenderService {
           tokens.push({ text: itStr, x: it.x, width: it.width });
         }
 
-        // Partition tokens into table cells based on tableColumns or large horizontal gaps (> 16pt)
         const cells: string[] = [];
         let currentCell = '';
 
@@ -516,7 +569,6 @@ export class PdfRenderService {
 
           currentCell += (currentCell && !currentCell.endsWith(' ') && !tok.text.startsWith(' ') ? ' ' : '') + tok.text;
 
-          // Check if there is a gap to the next token (> 16 points) or crossing a column boundary
           if (nextTok) {
             const gap = nextTok.x - (tok.x + tok.width);
             const isColumnJump =
@@ -540,9 +592,6 @@ export class PdfRenderService {
           tokens.map((t) => t.text).join(' ')
         );
 
-        // List detection regexes:
-        // Bullet: •, -, *, ▪, ◦, –, —
-        // Numbered: 1., 1(a), (a), (i), [1], A., etc.
         const isBullet = /^[-•*▪◦–—■►✔✓]\s*/.test(fullLineText);
         const isNumbered =
           /^(\d+(\.\d+)*[\.\)]|\([0-9a-zA-Z]+\)(\([0-9a-zA-Z]+\))*|[a-zA-Z][\.\)]|\[[0-9a-zA-Z\s:]+\]|[ivxlcdmIVXLCDM]+[\.\)]|\d+\s*\([a-z0-9]+\))\s*/i.test(
@@ -562,9 +611,6 @@ export class PdfRenderService {
         };
       });
 
-      // -------------------------------------------------------------
-      // 3. GROUP LINES INTO STRUCTURED PARAGRAPHS, TABLES, AND LISTS
-      // -------------------------------------------------------------
       let i = 0;
       const pageParagraphs: DocParagraph[] = [];
 
@@ -572,7 +618,6 @@ export class PdfRenderService {
         const currentLine = processedLines[i];
 
         // 1. TABLE GROUPING
-        // If line has multiple cells (or aligns with table columns), group into a Table
         if (
           currentLine.isTableCandidate &&
           (i + 1 >= processedLines.length || processedLines[i + 1].isTableCandidate || currentLine.cells.length >= 3)
@@ -582,13 +627,11 @@ export class PdfRenderService {
 
           while (i < processedLines.length) {
             const line = processedLines[i];
-            // If line has multiple cells
             if (line.cells.length >= 2) {
               maxCols = Math.max(maxCols, line.cells.length);
               tableRows.push(line.cells);
               i++;
             } else if (tableRows.length > 0 && line.cells.length === 1 && !line.isListItem && line.dominantFontSize <= 13) {
-              // Multi-line continuation inside last row's rightmost cell
               const lastRow = tableRows[tableRows.length - 1];
               lastRow[lastRow.length - 1] += ' ' + line.formattedText;
               i++;
@@ -598,7 +641,6 @@ export class PdfRenderService {
           }
 
           if (tableRows.length > 0) {
-            // Normalize all rows to maxCols
             const normalizedRows = tableRows.map((r) => {
               const rowCopy = [...r];
               while (rowCopy.length < maxCols) {
@@ -675,7 +717,6 @@ export class PdfRenderService {
           const nextLine = processedLines[i];
           const lineGap = Math.abs(lastY - nextLine.y);
 
-          // Stop combining if next line is a list item, heading, table, or large gap
           if (
             nextLine.isListItem ||
             nextLine.dominantFontSize > currentLine.dominantFontSize + 1.5 ||
@@ -703,7 +744,6 @@ export class PdfRenderService {
         });
       }
 
-      // Merge text paragraphs and diagrams for this page, preserving natural top-to-bottom flow
       const combinedPageElements = [...pageParagraphs, ...pageDiagrams];
       combinedPageElements.sort((a, b) => (b.orderY || 0) - (a.orderY || 0));
 
@@ -717,7 +757,7 @@ export class PdfRenderService {
    * Generate lightweight JPEG data URL thumbnail for a specific page
    */
   public static async generateThumbnail(
-    pdfDoc: pdfjsLib.PDFDocumentProxy,
+    pdfDoc: pdfDocProxyType,
     pageNumber: number,
     rotation: number = 0,
     targetWidth: number = 200
@@ -777,3 +817,5 @@ export class PdfRenderService {
     return canvas.toDataURL(format, 0.95);
   }
 }
+
+type pdfDocProxyType = pdfjsLib.PDFDocumentProxy;

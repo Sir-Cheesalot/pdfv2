@@ -418,6 +418,34 @@ export function usePdfDocument() {
     }
   }, [pdfBytes, pages, annotations, watermark, metadata, fileName]);
 
+  const updatePageTextInStream = useCallback(
+    async (
+      pageIndex: number,
+      originalText: string,
+      newText: string,
+      item: { x: number; y: number; fontSize: number; fontName?: string }
+    ) => {
+      if (!pdfBytes) return;
+      try {
+        const updated = await PdfService.rewritePageTextStream(
+          pdfBytes,
+          pageIndex,
+          originalText,
+          newText,
+          item.fontName || 'Helvetica',
+          item.fontSize,
+          item.x,
+          item.y
+        );
+        PdfRenderService.invalidateCache(docId);
+        setPdfBytes(updated);
+      } catch (err) {
+        console.error('Error rewriting PDF text stream:', err);
+      }
+    },
+    [pdfBytes, docId]
+  );
+
   return {
     docId,
     fileName,
@@ -452,6 +480,7 @@ export function usePdfDocument() {
     insertBlankPage,
     insertExternalPages,
     updatePageAnnotations,
+    updatePageTextInStream,
     exportBakedPdf,
     undo,
     redo,

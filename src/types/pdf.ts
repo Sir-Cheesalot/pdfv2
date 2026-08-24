@@ -30,7 +30,7 @@ export interface ExtractedTextItem {
   height: number;
   fontSize: number;
   fontName: string;
-  originalTransform: number[];
+  originalTransform?: number[];
 }
 
 export interface OriginalTextEdit {

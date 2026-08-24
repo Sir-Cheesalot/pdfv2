@@ -44,6 +44,8 @@ export const DocStudio: React.FC<DocStudioProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [copied, setCopied] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [ocrLoadingId, setOcrLoadingId] = useState<string | null>(null);
+  const [ocrProgress, setOcrProgress] = useState<number>(0);
 
   // Hidden image input refs
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -241,6 +243,38 @@ export const DocStudio: React.FC<DocStudioProps> = ({
         return p;
       })
     );
+  };
+
+  // Run Tesseract OCR on Diagram / Scanned image
+  const handleRunOcrOnDiagram = async (para: DocParagraph, globalIndex: number) => {
+    if (!para.imageUrl) return;
+    setOcrLoadingId(para.id);
+    try {
+      const ocrRes = await PdfRenderService.runOcrOnImage(para.imageUrl, (prog) => {
+        setOcrProgress(Math.round(prog * 100));
+      });
+
+      if (ocrRes.text && ocrRes.text.trim()) {
+        const lines = ocrRes.text.split('\n').map((l) => l.trim()).filter(Boolean);
+        const newParas: DocParagraph[] = lines.map((line, lIdx) => ({
+          id: `ocr-transcribed-${Date.now()}-${lIdx}`,
+          type: 'p',
+          text: cleanSubSuperTags(line),
+          pageIndex: para.pageIndex,
+        }));
+
+        setParagraphs((prev) => {
+          const copy = [...prev];
+          copy.splice(globalIndex + 1, 0, ...newParas);
+          return copy;
+        });
+      }
+    } catch (err) {
+      console.error('OCR failed on diagram:', err);
+    } finally {
+      setOcrLoadingId(null);
+      setOcrProgress(0);
+    }
   };
 
   // Table manipulation handlers
@@ -717,7 +751,7 @@ export const DocStudio: React.FC<DocStudioProps> = ({
                           </button>
                         </div>
 
-                        {/* DIAGRAM / IMAGE VIEW */}
+                        {/* DIAGRAM / IMAGE VIEW WITH TESSERACT OCR */}
                         {para.type === 'image' && para.imageUrl && (
                           <div className="flex flex-col items-center py-2 space-y-2 bg-slate-50/70 border border-black/5 rounded-xl p-3">
                             <img
@@ -725,7 +759,7 @@ export const DocStudio: React.FC<DocStudioProps> = ({
                               alt={para.caption || 'Diagram'}
                               className="max-w-full max-h-[380px] object-contain rounded-lg border border-black/10 shadow-xs bg-white"
                             />
-                            <div className="w-full flex items-center justify-center">
+                            <div className="w-full flex items-center justify-between gap-2 pt-1 px-2">
                               <input
                                 type="text"
                                 value={para.caption || ''}
@@ -733,6 +767,20 @@ export const DocStudio: React.FC<DocStudioProps> = ({
                                 onChange={(e) => handleUpdateCaption(para.id, e.target.value)}
                                 className="text-center text-xs italic text-slate-500 bg-transparent border-b border-dashed border-transparent hover:border-black/20 focus:border-[#0071e3] outline-none max-w-sm px-2 py-0.5"
                               />
+
+                              <button
+                                onClick={() => handleRunOcrOnDiagram(para, globalIndex)}
+                                disabled={ocrLoadingId === para.id}
+                                className="flex items-center space-x-1 px-2.5 py-1 bg-[#0071e3]/10 hover:bg-[#0071e3]/20 text-[#0071e3] text-xs font-medium rounded-lg transition-all disabled:opacity-50"
+                                title="Run Tesseract OCR on this image to convert to editable text"
+                              >
+                                <Sparkles className="w-3 h-3" />
+                                <span>
+                                  {ocrLoadingId === para.id
+                                    ? `Recognizing... ${ocrProgress}%`
+                                    : 'OCR (Image to Text)'}
+                                </span>
+                              </button>
                             </div>
                           </div>
                         )}

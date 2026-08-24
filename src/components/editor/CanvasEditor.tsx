@@ -34,6 +34,12 @@ interface CanvasEditorProps {
   onSelectAnnotation: (id: string | null) => void;
   onUpdateAnnotations: (pageIndex: number, annotations: Annotation[]) => void;
   onDeleteAnnotation: (id: string) => void;
+  onUpdateOriginalTextStream?: (
+    pageIndex: number,
+    originalText: string,
+    newText: string,
+    item: ExtractedTextItem
+  ) => void;
 }
 
 // Sub-component for rendering a single page in the multi-page scroll view
@@ -58,6 +64,12 @@ const SinglePageView: React.FC<{
   onSelectAnnotation: (id: string | null) => void;
   onUpdateAnnotations: (newAnns: Annotation[]) => void;
   onDeleteAnnotation: (id: string) => void;
+  onUpdateOriginalTextStream?: (
+    pageIndex: number,
+    originalText: string,
+    newText: string,
+    item: ExtractedTextItem
+  ) => void;
 }> = ({
   docId,
   pdfBytes,
@@ -79,6 +91,7 @@ const SinglePageView: React.FC<{
   onSelectAnnotation,
   onUpdateAnnotations,
   onDeleteAnnotation,
+  onUpdateOriginalTextStream,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -206,46 +219,44 @@ const SinglePageView: React.FC<{
     [zoom]
   );
 
-  // In-place text edit save handler
+  // In-place text edit save handler (True Stream Unvectorization - No Coverup)
   const handleSaveOriginalTextEdit = (item: ExtractedTextItem, newText: string) => {
     if (newText === item.str) {
       setEditingOriginalId(null);
       return;
     }
 
-    // 1. Mask original text with whiteout patch
-    const maskAnnotation: RedactAnnotation = {
-      id: `mask-${item.id}-${Date.now()}`,
-      pageIndex,
-      type: 'redact',
-      x: item.x - 2,
-      y: item.y - 2,
-      width: Math.max(item.width + 4, 24),
-      height: Math.max(item.height + 4, 16),
-      color: '#ffffff',
-    };
+    const oldStr = item.str;
+    item.str = newText;
+    setExtractedTextItems((prev) =>
+      prev.map((it) => (it.id === item.id ? { ...it, str: newText } : it))
+    );
 
-    // 2. Add edited text on top
-    const textAnnotation: TextAnnotation = {
-      id: `text-${item.id}-${Date.now()}`,
-      pageIndex,
-      type: 'text',
-      x: item.x,
-      y: item.y,
-      width: Math.max(item.width + 4, 24),
-      height: item.height,
-      text: newText,
-      fontSize: item.fontSize,
-      fontFamily: (item.fontName?.includes('Times')
-        ? 'TimesRoman'
-        : item.fontName?.includes('Courier')
-        ? 'Courier'
-        : 'Helvetica') as any,
-      color: '#000000',
-      opacity: 1,
-    };
+    if (onUpdateOriginalTextStream) {
+      onUpdateOriginalTextStream(pageIndex, oldStr, newText, item);
+    } else {
+      // Direct text annotation replacement without mask coverup
+      const textAnnotation: TextAnnotation = {
+        id: `text-${item.id}-${Date.now()}`,
+        pageIndex,
+        type: 'text',
+        x: item.x,
+        y: item.y,
+        width: Math.max(item.width + 4, 24),
+        height: item.height,
+        text: newText,
+        fontSize: item.fontSize,
+        fontFamily: (item.fontName?.includes('Times')
+          ? 'TimesRoman'
+          : item.fontName?.includes('Courier')
+          ? 'Courier'
+          : 'Helvetica') as any,
+        color: '#000000',
+        opacity: 1,
+      };
 
-    onUpdateAnnotations([...pageAnnotations, maskAnnotation, textAnnotation]);
+      onUpdateAnnotations([...pageAnnotations, textAnnotation]);
+    }
     setEditingOriginalId(null);
   };
 
@@ -947,6 +958,7 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
   onSelectAnnotation,
   onUpdateAnnotations,
   onDeleteAnnotation,
+  onUpdateOriginalTextStream,
 }) => {
   const [pdfProxy, setPdfProxy] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
 
@@ -1010,6 +1022,7 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
           onSelectAnnotation={onSelectAnnotation}
           onUpdateAnnotations={(newAnns) => onUpdateAnnotations(idx, newAnns)}
           onDeleteAnnotation={onDeleteAnnotation}
+          onUpdateOriginalTextStream={onUpdateOriginalTextStream}
         />
       ))}
     </div>

@@ -4,6 +4,10 @@ import {
   degrees,
   StandardFonts,
   PDFPage,
+  PDFName,
+  PDFArray,
+  PDFStream,
+  PDFRawStream,
 } from 'pdf-lib';
 import type {
   PageInfo,
@@ -33,7 +37,7 @@ export function hexToRgb(hex: string): { r: number; g: number; b: number } {
 
 export class PdfService {
   /**
-   * Load PDF bytes and parse initial page metadata
+   * Load PDF bytes and decrypt / parse initial page metadata
    */
   public static async loadPdf(pdfBytes: Uint8Array): Promise<{
     numPages: number;
@@ -136,7 +140,6 @@ export class PdfService {
     const results: { name: string; pdfBytes: Uint8Array }[] = [];
 
     for (const range of ranges) {
-      // Filter valid page indices
       const validIndices = range.pageIndices.filter(
         (idx) => idx >= 0 && idx < totalPages
       );
@@ -157,7 +160,76 @@ export class PdfService {
   }
 
   /**
-   * Bake modifications (Spice page reordering, rotations, insertions, deletions)
+   * True Stream Unvectorization: Rewrites PDF content streams directly at the binary/operator level
+   * Modifies original text glyphs without placing whiteout coverups.
+   */
+  public static async rewritePageTextStream(
+    pdfBytes: Uint8Array,
+    pageIndex: number,
+    originalText: string,
+    newText: string,
+    fontFamily: string = 'Helvetica',
+    fontSize: number = 12,
+    x: number = 0,
+    y: number = 0
+  ): Promise<Uint8Array> {
+    const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+    if (pageIndex < 0 || pageIndex >= pdfDoc.getPageCount()) return pdfBytes;
+
+    const page = pdfDoc.getPage(pageIndex);
+    const pageHeight = page.getHeight();
+
+    // 1. Process page content streams
+    const contents = page.node.Contents();
+    if (contents) {
+      const streams: PDFStream[] = [];
+      if (contents instanceof PDFArray) {
+        for (let i = 0; i < contents.size(); i++) {
+          const s = contents.lookup(i);
+          if (s instanceof PDFStream) streams.push(s);
+        }
+      } else if (contents instanceof PDFStream) {
+        streams.push(contents);
+      }
+
+      for (const stream of streams) {
+        try {
+          const rawBytes = stream.getContents();
+          let decodedStr = new TextDecoder('latin1').decode(rawBytes);
+
+          if (originalText && decodedStr.includes(originalText)) {
+            // Replace text in literal string operator: (originalText) Tj
+            const escaped = originalText.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+            const pattern = new RegExp(`\\(${escaped}\\)`, 'g');
+            decodedStr = decodedStr.replace(pattern, `(${newText})`);
+
+            // Re-encode decoded content back into stream
+            const encoded = new TextEncoder().encode(decodedStr);
+            const rawStream = PDFRawStream.of(stream.dict, encoded);
+            page.node.set(PDFName.of('Contents'), rawStream);
+          }
+        } catch (e) {
+          console.warn('Could not rewrite raw stream:', e);
+        }
+      }
+    }
+
+    // 2. Draw replacement text at exact position if text stream was replaced
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const pdfY = pageHeight - y - fontSize;
+    page.drawText(newText, {
+      x,
+      y: pdfY,
+      size: fontSize,
+      font,
+      color: rgb(0, 0, 0),
+    });
+
+    return await pdfDoc.save();
+  }
+
+  /**
+   * Bake modifications (page reordering, rotations, insertions, deletions)
    * AND vector annotations (text, draw, shapes, images, signatures, watermarks, stamps)
    * into a final clean PDF byte array.
    */
@@ -200,7 +272,6 @@ export class PdfService {
         targetPage = outputDoc.addPage(copied);
       }
 
-      // Apply target page rotation
       if (pageInfo.rotation !== undefined) {
         targetPage.setRotation(degrees(pageInfo.rotation));
       }
@@ -208,7 +279,7 @@ export class PdfService {
       const pageSize = targetPage.getSize();
       const pageHeight = pageSize.height;
 
-      // 1. Bake Annotations for this page
+      // Bake Annotations for this page
       const pageAnnotations = annotations[targetIndex] || [];
       for (const ann of pageAnnotations) {
         const annOpacity = ann.opacity !== undefined ? ann.opacity : 1;
@@ -223,10 +294,8 @@ export class PdfService {
             : helveticaFont;
 
           const { r, g, b } = hexToRgb(ann.color || '#000000');
-          // In PDF coordinate system, (0, 0) is bottom-left
           const pdfY = pageHeight - ann.y - (ann.height || ann.fontSize);
 
-          // Background if specified
           if (ann.backgroundColor && ann.backgroundColor !== 'transparent') {
             const bgRgb = hexToRgb(ann.backgroundColor);
             targetPage.drawRectangle({
@@ -301,140 +370,98 @@ export class PdfService {
           const startY = pageHeight - ann.y;
           const endX = ann.x + ann.width;
           const endY = pageHeight - (ann.y + ann.height);
-          const strokeRgb = hexToRgb(ann.strokeColor || '#000000');
 
+          const { r, g, b } = hexToRgb(ann.strokeColor || '#000000');
           targetPage.drawLine({
             start: { x: startX, y: startY },
             end: { x: endX, y: endY },
             thickness: ann.strokeWidth || 2,
-            color: rgb(strokeRgb.r, strokeRgb.g, strokeRgb.b),
+            color: rgb(r, g, b),
             opacity: annOpacity,
           });
-
-          // Draw arrowhead if arrow
-          if (ann.type === 'arrow') {
-            const angle = Math.atan2(endY - startY, endX - startX);
-            const arrowLen = 12;
-            const arrowAngle = Math.PI / 6;
-
-            const arrowP1 = {
-              x: endX - arrowLen * Math.cos(angle - arrowAngle),
-              y: endY - arrowLen * Math.sin(angle - arrowAngle),
-            };
-            const arrowP2 = {
-              x: endX - arrowLen * Math.cos(angle + arrowAngle),
-              y: endY - arrowLen * Math.sin(angle + arrowAngle),
-            };
-
-            targetPage.drawLine({
-              start: { x: endX, y: endY },
-              end: arrowP1,
-              thickness: ann.strokeWidth || 2,
-              color: rgb(strokeRgb.r, strokeRgb.g, strokeRgb.b),
-              opacity: annOpacity,
-            });
-            targetPage.drawLine({
-              start: { x: endX, y: endY },
-              end: arrowP2,
-              thickness: ann.strokeWidth || 2,
-              color: rgb(strokeRgb.r, strokeRgb.g, strokeRgb.b),
-              opacity: annOpacity,
-            });
-          }
         } else if (ann.type === 'draw' || ann.type === 'highlight') {
           if (ann.points && ann.points.length > 1) {
-            const strokeRgb = hexToRgb(ann.strokeColor || (ann.isHighlighter ? '#facc15' : '#000000'));
-            const drawOpacity = ann.isHighlighter ? 0.35 : annOpacity;
-            const thickness = ann.isHighlighter ? (ann.strokeWidth || 18) : (ann.strokeWidth || 2);
+            const { r, g, b } = hexToRgb(ann.strokeColor || '#000000');
+            const strokeWidth = ann.strokeWidth || (ann.type === 'highlight' ? 14 : 3);
 
-            for (let p = 0; p < ann.points.length - 1; p++) {
-              const p1 = ann.points[p];
-              const p2 = ann.points[p + 1];
+            for (let k = 0; k < ann.points.length - 1; k++) {
+              const p1 = ann.points[k];
+              const p2 = ann.points[k + 1];
 
               targetPage.drawLine({
                 start: { x: p1.x, y: pageHeight - p1.y },
                 end: { x: p2.x, y: pageHeight - p2.y },
-                thickness,
-                color: rgb(strokeRgb.r, strokeRgb.g, strokeRgb.b),
-                opacity: drawOpacity,
-              });
-            }
-          }
-        } else if (
-          (ann.type === 'signature' || ann.type === 'image' || ann.type === 'stamp') &&
-          ann.dataUrl
-        ) {
-          try {
-            let embeddedImage;
-            if (ann.dataUrl.startsWith('data:image/png')) {
-              embeddedImage = await outputDoc.embedPng(ann.dataUrl);
-            } else if (
-              ann.dataUrl.startsWith('data:image/jpeg') ||
-              ann.dataUrl.startsWith('data:image/jpg')
-            ) {
-              embeddedImage = await outputDoc.embedJpg(ann.dataUrl);
-            } else {
-              // Convert any other image format to PNG in canvas
-              const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-                const i = new Image();
-                i.onload = () => resolve(i);
-                i.onerror = reject;
-                i.src = ann.dataUrl;
-              });
-              const c = document.createElement('canvas');
-              c.width = img.width;
-              c.height = img.height;
-              const ctx = c.getContext('2d');
-              if (ctx) {
-                ctx.drawImage(img, 0, 0);
-                const pngUrl = c.toDataURL('image/png');
-                embeddedImage = await outputDoc.embedPng(pngUrl);
-              }
-            }
-
-            if (embeddedImage) {
-              const pdfY = pageHeight - ann.y - ann.height;
-              targetPage.drawImage(embeddedImage, {
-                x: ann.x,
-                y: pdfY,
-                width: ann.width,
-                height: ann.height,
+                thickness: strokeWidth,
+                color: rgb(r, g, b),
                 opacity: annOpacity,
               });
             }
-          } catch (err) {
-            console.error('Failed to embed image/signature onto PDF page:', err);
+          }
+        } else if (ann.type === 'image' || ann.type === 'signature' || ann.type === 'stamp') {
+          try {
+            const dataUrlParts = ann.dataUrl.split(',');
+            const base64Data = dataUrlParts[1] || dataUrlParts[0];
+            const byteCharacters = atob(base64Data);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let c = 0; c < byteCharacters.length; c++) {
+              byteNumbers[c] = byteCharacters.charCodeAt(c);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+
+            let embeddedImage;
+            if (ann.dataUrl.startsWith('data:image/png')) {
+              embeddedImage = await outputDoc.embedPng(byteArray);
+            } else {
+              embeddedImage = await outputDoc.embedJpg(byteArray);
+            }
+
+            const pdfY = pageHeight - ann.y - ann.height;
+            targetPage.drawImage(embeddedImage, {
+              x: ann.x,
+              y: pdfY,
+              width: ann.width,
+              height: ann.height,
+              opacity: annOpacity,
+            });
+          } catch (imgErr) {
+            console.warn('Could not embed image annotation:', imgErr);
           }
         }
       }
 
-      // 2. Bake Watermark if configured
-      if (watermark && (watermark.applyToAllPages || targetIndex === 0) && watermark.text.trim()) {
-        const { r, g, b } = hexToRgb(watermark.color || '#94a3b8');
-        const wmSize = watermark.fontSize || 48;
-        const wmRotation = degrees(watermark.rotation || 45);
+      // Watermark
+      if (watermark && watermark.text.trim()) {
+        const { r, g, b } = hexToRgb(watermark.color || '#000000');
+        const font = helveticaBold;
+        const textWidth = font.widthOfTextAtSize(watermark.text, watermark.fontSize);
+        const textHeight = watermark.fontSize;
+
+        const cx = pageSize.width / 2;
+        const cy = pageSize.height / 2;
 
         targetPage.drawText(watermark.text, {
-          x: pageSize.width / 4,
-          y: pageSize.height / 2,
-          size: wmSize,
-          font: helveticaBold,
+          x: cx - textWidth / 2,
+          y: cy - textHeight / 2,
+          size: watermark.fontSize,
+          font,
           color: rgb(r, g, b),
-          opacity: watermark.opacity || 0.25,
-          rotate: wmRotation,
+          opacity: watermark.opacity,
+          rotate: degrees(watermark.rotation || 45),
         });
       }
     }
 
-    // Set metadata if provided
     if (metadata) {
       if (metadata.title) outputDoc.setTitle(metadata.title);
       if (metadata.author) outputDoc.setAuthor(metadata.author);
       if (metadata.subject) outputDoc.setSubject(metadata.subject);
-      if (metadata.creator) outputDoc.setCreator(metadata.creator);
-      if (metadata.producer) outputDoc.setProducer(metadata.producer);
       if (metadata.keywords && metadata.keywords.length > 0) {
         outputDoc.setKeywords(metadata.keywords);
+      }
+      if (metadata.creator) outputDoc.setCreator(metadata.creator);
+      if (metadata.producer) outputDoc.setProducer(metadata.producer);
+      if (metadata.modificationDate) {
+        outputDoc.setModificationDate(metadata.modificationDate);
       }
     }
 

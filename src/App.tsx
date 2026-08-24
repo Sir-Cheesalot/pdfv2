@@ -58,6 +58,7 @@ export const App: React.FC = () => {
     insertBlankPage,
     insertExternalPages,
     updatePageAnnotations,
+    updatePageTextInStream,
     exportBakedPdf,
     undo,
     redo,
