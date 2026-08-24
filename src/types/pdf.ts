@@ -218,12 +218,23 @@ export interface DocParagraph {
   text: string;
   runs?: DocTextRun[];
   tableData?: string[][]; // For tables: 2D array of cells [rows][cols]
+  // Media is kept separate from cell text so exports produce a real image in
+  // a real table cell instead of serialising a data URL into editable text.
+  tableCellImages?: Record<string, TableCellImage>;
   imageUrl?: string; // For diagrams and images
   imageWidth?: number;
   imageHeight?: number;
   caption?: string;
   pageIndex: number;
   orderY?: number; // Visual vertical coordinate for natural ordering
+  layoutBottomY?: number;
+}
+
+export interface TableCellImage {
+  dataUrl: string;
+  alt?: string;
+  width?: number;
+  height?: number;
 }
 
 export interface RebuiltTextElement {

@@ -212,12 +212,17 @@ export const DocStudio: React.FC<DocStudioProps> = ({
         setParagraphs((prev) =>
           prev.map((p) => {
             if (p.id === paraId && p.tableData) {
-              const currentCell = p.tableData[rowIdx]?.[colIdx] || '';
-              const newCell = `![img](${dataUrl}) ${currentCell.replace(/!\[.*?\]\(.*?\)/, '').trim()}`.trim();
               const newTable = p.tableData.map((row, r) =>
-                r === rowIdx ? row.map((cell, c) => (c === colIdx ? newCell : cell)) : [...row]
+                r === rowIdx ? [...row] : [...row]
               );
-              return { ...p, tableData: newTable };
+              return {
+                ...p,
+                tableData: newTable,
+                tableCellImages: {
+                  ...p.tableCellImages,
+                  [`${rowIdx}:${colIdx}`]: { dataUrl, alt: file.name, width: 160, height: 120 },
+                },
+              };
             }
             return p;
           })
@@ -233,12 +238,12 @@ export const DocStudio: React.FC<DocStudioProps> = ({
     setParagraphs((prev) =>
       prev.map((p) => {
         if (p.id === paraId && p.tableData) {
-          const currentCell = p.tableData[rowIdx]?.[colIdx] || '';
-          const cleaned = currentCell.replace(/!\[.*?\]\(.*?\)|data:image\/[a-zA-Z]+;base64,[^"'\s\)]+/, '').trim();
           const newTable = p.tableData.map((row, r) =>
-            r === rowIdx ? row.map((cell, c) => (c === colIdx ? cleaned : cell)) : [...row]
+            r === rowIdx ? [...row] : [...row]
           );
-          return { ...p, tableData: newTable };
+          const images = { ...p.tableCellImages };
+          delete images[`${rowIdx}:${colIdx}`];
+          return { ...p, tableData: newTable, tableCellImages: images };
         }
         return p;
       })
@@ -858,9 +863,7 @@ export const DocStudio: React.FC<DocStudioProps> = ({
                                     }
                                   >
                                     {row.map((cell, cIdx) => {
-                                      const hasCellImage = cell.includes('data:image/');
-                                      const imgUrlMatch = cell.match(/data:image\/[a-zA-Z]+;base64,[^"'\s\)]+/);
-                                      const cellTextOnly = cell.replace(/!\[.*?\]\(.*?\)|data:image\/[a-zA-Z]+;base64,[^"'\s\)]+/, '').trim();
+                                      const cellImage = para.tableCellImages?.[`${rIdx}:${cIdx}`];
 
                                       return (
                                         <td
@@ -868,11 +871,11 @@ export const DocStudio: React.FC<DocStudioProps> = ({
                                           className="border border-slate-200 p-1.5 relative group/cell"
                                         >
                                           {/* Render Cell Image Thumbnail if exists */}
-                                          {hasCellImage && imgUrlMatch && (
+                                          {cellImage && (
                                             <div className="relative mb-1.5 p-1 bg-white border border-black/10 rounded-md max-w-fit">
                                               <img
-                                                src={imgUrlMatch[0]}
-                                                alt="Cell Figure"
+                                                src={cellImage.dataUrl}
+                                                alt={cellImage.alt || 'Cell image'}
                                                 className="max-h-20 max-w-full object-contain rounded"
                                               />
                                               <button
@@ -888,7 +891,7 @@ export const DocStudio: React.FC<DocStudioProps> = ({
                                           <div className="flex items-center space-x-1">
                                             <input
                                               type="text"
-                                              value={cellTextOnly || (hasCellImage ? '' : cell)}
+                                              value={cell}
                                               onFocus={() =>
                                                 setActiveElementInfo({
                                                   paraId: para.id,
@@ -899,10 +902,7 @@ export const DocStudio: React.FC<DocStudioProps> = ({
                                               }
                                               onKeyDown={(e) => handleKeyDown(e, para.id)}
                                               onChange={(e) => {
-                                                const newText = hasCellImage && imgUrlMatch
-                                                  ? `![img](${imgUrlMatch[0]}) ${e.target.value}`
-                                                  : e.target.value;
-                                                handleUpdateTableCell(para.id, rIdx, cIdx, newText);
+                                                handleUpdateTableCell(para.id, rIdx, cIdx, e.target.value);
                                               }}
                                               className="w-full bg-transparent border-0 outline-none text-slate-800 text-xs focus:ring-1 focus:ring-[#0071e3] rounded px-1"
                                             />

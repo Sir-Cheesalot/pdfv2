@@ -186,9 +186,30 @@ export class DocExportService {
         const rows = p.tableData.map((rowCells, rowIdx) => {
           const isHeader = rowIdx === 0;
           return new TableRow({
-            children: rowCells.map((cellContent) => {
+            children: rowCells.map((cellContent, colIdx) => {
               const cellChildren: (Paragraph)[] = [];
+              const cellImage = p.tableCellImages?.[`${rowIdx}:${colIdx}`];
 
+              if (cellImage) {
+                try {
+                  const imgBytes = dataUrlToUint8Array(cellImage.dataUrl);
+                  const isPng = cellImage.dataUrl.startsWith('data:image/png');
+                  cellChildren.push(new Paragraph({
+                    children: [new ImageRun({
+                      data: imgBytes,
+                      type: isPng ? 'png' : 'jpg',
+                      transformation: { width: cellImage.width || 140, height: cellImage.height || 100 },
+                    } as any)],
+                    alignment: AlignmentType.CENTER,
+                    spacing: { before: 40, after: 40 },
+                  }));
+                } catch (err) {
+                  console.warn('Cell image error:', err);
+                }
+              }
+
+              // Backward compatibility for documents created before cells had
+              // structured media. New documents never store images in text.
               if (cellContent && cellContent.includes('data:image/')) {
                 const imgMatch = cellContent.match(/data:image\/[a-zA-Z]+;base64,[^"'\s\)]+/);
                 if (imgMatch) {
@@ -226,7 +247,7 @@ export class DocExportService {
                     })
                   );
                 }
-              } else {
+              } else if (cellContent) {
                 cellChildren.push(
                   new Paragraph({
                     children: parseFormattedTextRuns(cellContent),
@@ -409,13 +430,22 @@ export class DocExportService {
         const rows = p.tableData;
         const numCols = rows[0]?.length || 1;
         const colWidth = contentWidth / numCols;
-        const rowHeight = 22;
+        const cellImages = p.tableCellImages || {};
 
-        checkPageBreak(rows.length * rowHeight + 20);
+        const tableHeight = rows.reduce(
+          (total, row, rowIdx) =>
+            total + Math.max(26, ...row.map((_, colIdx) => (cellImages[`${rowIdx}:${colIdx}`]?.height || 0) + 14)),
+          0
+        );
+        checkPageBreak(tableHeight + 20);
 
         for (let rIdx = 0; rIdx < rows.length; rIdx++) {
           const row = rows[rIdx];
           const isHeader = rIdx === 0;
+          const rowHeight = Math.max(
+            26,
+            ...row.map((_, cIdx) => (cellImages[`${rIdx}:${cIdx}`]?.height || 0) + 14)
+          );
           checkPageBreak(rowHeight);
 
           // Draw header background
@@ -434,6 +464,7 @@ export class DocExportService {
             const cellX = margin + cIdx * colWidth;
             const cellY = currentY - rowHeight;
             const cellContent = row[cIdx] || '';
+            const cellImage = cellImages[`${rIdx}:${cIdx}`];
             const cellClean = cellContent.replace(/!\[.*?\]\(.*?\)|<[^>]+>/g, '').trim();
 
             currentPage.drawRectangle({
@@ -444,6 +475,28 @@ export class DocExportService {
               borderColor: rgb(0.8, 0.8, 0.8),
               borderWidth: 0.5,
             });
+
+            if (cellImage) {
+              try {
+                const bytes = dataUrlToUint8Array(cellImage.dataUrl);
+                const embedded = cellImage.dataUrl.startsWith('data:image/png')
+                  ? await pdfDoc.embedPng(bytes)
+                  : await pdfDoc.embedJpg(bytes);
+                const maxWidth = colWidth - 8;
+                const maxHeight = rowHeight - 12;
+                const scale = Math.min(maxWidth / embedded.width, maxHeight / embedded.height, 1);
+                const imageWidth = embedded.width * scale;
+                const imageHeight = embedded.height * scale;
+                currentPage.drawImage(embedded, {
+                  x: cellX + (colWidth - imageWidth) / 2,
+                  y: cellY + rowHeight - imageHeight - 4,
+                  width: imageWidth,
+                  height: imageHeight,
+                });
+              } catch (err) {
+                console.warn('Could not export table-cell image to PDF:', err);
+              }
+            }
 
             if (cellClean) {
               const font = isHeader ? helveticaBold : helvetica;
@@ -546,12 +599,13 @@ export class DocExportService {
         bodyHtml += `<table style="width: 100%; border-collapse: collapse; margin: 20px 0; border: 1px solid #d1d5db; font-size: 14px;">\n`;
         p.tableData.forEach((row, rIdx) => {
           bodyHtml += `  <tr style="${rIdx === 0 ? 'background-color: #f9fafb; font-weight: 600;' : ''}">\n`;
-          row.forEach((cell) => {
-            const isImg = cell.includes('data:image/');
+          row.forEach((cell, cIdx) => {
+            const cellImage = p.tableCellImages?.[`${rIdx}:${cIdx}`];
+            const isImg = Boolean(cellImage) || cell.includes('data:image/');
             const tag = rIdx === 0 ? 'th' : 'td';
             bodyHtml += `    <${tag} style="border: 1px solid #d1d5db; padding: 8px 12px; text-align: left;">`;
             if (isImg) {
-              const match = cell.match(/data:image\/[a-zA-Z]+;base64,[^"'\s\)]+/);
+              const match = cellImage ? [cellImage.dataUrl] : cell.match(/data:image\/[a-zA-Z]+;base64,[^"'\s\)]+/);
               if (match) {
                 bodyHtml += `<img src="${match[0]}" alt="Table figure" style="max-width: 160px; max-height: 120px; object-contain; display: block; margin-bottom: 4px;" />`;
               }

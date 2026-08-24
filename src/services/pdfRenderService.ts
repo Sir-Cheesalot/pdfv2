@@ -741,6 +741,7 @@ export class PdfRenderService {
               tableData: normalizedRows,
               pageIndex: p - 1,
               orderY: currentLine.y,
+              layoutBottomY: tableRows.length > 0 ? processedLines[i - 1].y : currentLine.y,
             });
             continue;
           }
@@ -829,7 +830,18 @@ export class PdfRenderService {
         });
       }
 
-      const combinedPageElements = [...pageParagraphs, ...pageDiagrams];
+      // A table is already represented as editable cells. Do not add a second
+      // raster "diagram" taken from the same vertical region.
+      const standaloneDiagrams = pageDiagrams.filter((diagram) =>
+        !pageParagraphs.some(
+          (item) =>
+            item.type === 'table' &&
+            diagram.orderY !== undefined &&
+            diagram.orderY <= (item.orderY || 0) + 12 &&
+            diagram.orderY >= (item.layoutBottomY || item.orderY || 0) - 12
+        )
+      );
+      const combinedPageElements = [...pageParagraphs, ...standaloneDiagrams];
       combinedPageElements.sort((a, b) => (b.orderY || 0) - (a.orderY || 0));
 
       paragraphs.push(...combinedPageElements);
