@@ -405,7 +405,7 @@ export const App: React.FC = () => {
         onZoomChange={setZoom}
         onUndo={undo}
         onRedo={redo}
-        onExport={() => exportRebuiltPdf()}
+        onExport={() => (mode === 'edit' ? exportBakedPdf() : exportRebuiltPdf())}
         onOpenWatermark={() => setIsWatermarkModalOpen(true)}
         onOpenMetadata={() => setIsMetadataModalOpen(true)}
         onLoadSample={loadSamplePdf}

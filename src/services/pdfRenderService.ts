@@ -113,14 +113,17 @@ function autoTrimCanvas(canvas: HTMLCanvasElement): HTMLCanvasElement | null {
  * Visual validation filter:
  * To be considered a picture/diagram, it cannot be just one single flat solid color
  * (unless that color consists of black / black-adjacent drawing strokes & line art).
+ * Stray edge noise (e.g. 10px of black on a colored background) does NOT qualify as a picture.
  */
 function isMeaningfulVisual(canvas: HTMLCanvasElement): boolean {
   const ctx = canvas.getContext('2d');
   if (!ctx) return false;
 
   const { width, height } = canvas;
+  if (width < 18 || height < 18) return false;
+
   const pixels = ctx.getImageData(0, 0, width, height).data;
-  const colourBuckets = new Set<string>();
+  const colourCounts = new Map<string, number>();
   let nonWhite = 0;
   let blackOrDarkPixels = 0;
   let transitions = 0;
@@ -132,21 +135,21 @@ function isMeaningfulVisual(canvas: HTMLCanvasElement): boolean {
       const r = pixels[index];
       const g = pixels[index + 1];
       const b = pixels[index + 2];
-      const isNotWhite = r < 242 || g < 242 || b < 242;
+      const isNotWhite = r < 240 || g < 240 || b < 240;
       if (!isNotWhite) continue;
 
       nonWhite++;
 
-      // Check if pixel is black or dark neutral line / stroke (schematics, plots, sketches)
+      // Check if pixel is true black or dark neutral line / stroke (schematics, plots, sketches)
       const isBlackOrDark =
         (r < 75 && g < 75 && b < 75) ||
-        (r < 115 && g < 115 && b < 115 && Math.abs(r - g) < 18 && Math.abs(g - b) < 18);
+        (r < 115 && g < 115 && b < 115 && Math.abs(r - g) < 16 && Math.abs(g - b) < 16);
 
       if (isBlackOrDark) {
         blackOrDarkPixels++;
       } else {
-        // Group chromatic / non-black colors into distinct buckets
-        colourBuckets.add(`${Math.floor(r / 35)}-${Math.floor(g / 35)}-${Math.floor(b / 35)}`);
+        const bucket = `${Math.floor(r / 35)}-${Math.floor(g / 35)}-${Math.floor(b / 35)}`;
+        colourCounts.set(bucket, (colourCounts.get(bucket) || 0) + 1);
       }
 
       if (x + step < width) {
@@ -162,25 +165,32 @@ function isMeaningfulVisual(canvas: HTMLCanvasElement): boolean {
     }
   }
 
-  // Must have minimal content
-  if (nonWhite < 14) return false;
+  // Must have a significant amount of non-white content
+  if (nonWhite < 30) return false;
 
-  // 1. Black / dark line art (schematics, plots, graphs, circuits, curves, sketches) -> Valid!
-  if (blackOrDarkPixels >= 6) {
+  // 1. Significant black/dark line art (circuits, coordinate graphs, charts, chemical bonds, line sketches)
+  // Must have at least 25 dark pixels (stray 10px from border noise does not qualify)
+  if (blackOrDarkPixels >= 25) {
     return true;
   }
 
-  // 2. Colored visuals must have more than 1 color (cannot be just one single flat solid color)
-  if (colourBuckets.size >= 2) {
+  // 2. Multi-color pictures/illustrations/photos:
+  // Count only SIGNIFICANT color buckets (each having at least 15 pixels or 8% of non-white pixels)
+  const significantColors = Array.from(colourCounts.values()).filter(
+    (count) => count >= 15 || count >= nonWhite * 0.08
+  );
+
+  if (significantColors.length >= 2) {
     return true;
   }
 
-  // 3. Detailed gradient/texture variation within same color
+  // 3. Significant texture/gradient transitions within a shaded illustration
   const detailRatio = transitions / nonWhite;
-  if (colourBuckets.size === 1 && detailRatio >= 0.22) {
+  if (significantColors.length === 1 && detailRatio >= 0.35 && nonWhite >= 50) {
     return true;
   }
 
+  // A flat solid color background with a tiny stray artifact (e.g. 10px of black or single color) does NOT qualify
   return false;
 }
 
