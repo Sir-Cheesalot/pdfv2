@@ -27,43 +27,70 @@ function dataUrlToUint8Array(dataUrl: string): Uint8Array {
   return u8;
 }
 
+interface ParsedToken {
+  text: string;
+  bold: boolean;
+  italics: boolean;
+  underline: boolean;
+  subScript: boolean;
+  superScript: boolean;
+}
+
 /**
- * Parses inline formatting tags (<sup>, <sub>, <b>, <i>) into docx TextRun instances
+ * Token-based parser for nested HTML tags: <b>, <strong>, <i>, <em>, <u>, <sub>, <sup>
  */
 function parseFormattedTextRuns(rawText: string): TextRun[] {
   if (!rawText) return [new TextRun('')];
 
   const runs: TextRun[] = [];
-  // Regex to match <sup>...</sup>, <sub>...</sub>, <b>...</b>, <i>...</i>
-  const tagRegex = /<(sup|sub|b|i)>([\s\S]*?)<\/\1>/gi;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
 
-  while ((match = tagRegex.exec(rawText)) !== null) {
-    const textBefore = rawText.substring(lastIndex, match.index);
-    if (textBefore) {
-      runs.push(new TextRun(textBefore));
+  // Match all opening and closing tags or plain text chunks
+  const tokenRegex = /(<\/?(?:b|strong|i|em|u|sub|sup)>)/gi;
+  const parts = rawText.split(tokenRegex);
+
+  let bold = false;
+  let italics = false;
+  let underline = false;
+  let subScript = false;
+  let superScript = false;
+
+  for (const part of parts) {
+    if (!part) continue;
+
+    const lower = part.toLowerCase();
+    if (lower === '<b>' || lower === '<strong>') {
+      bold = true;
+    } else if (lower === '</b>' || lower === '</strong>') {
+      bold = false;
+    } else if (lower === '<i>' || lower === '<em>') {
+      italics = true;
+    } else if (lower === '</i>' || lower === '</em>') {
+      italics = false;
+    } else if (lower === '<u>') {
+      underline = true;
+    } else if (lower === '</u>') {
+      underline = false;
+    } else if (lower === '<sub>') {
+      subScript = true;
+    } else if (lower === '</sub>') {
+      subScript = false;
+    } else if (lower === '<sup>') {
+      superScript = true;
+    } else if (lower === '</sup>') {
+      superScript = false;
+    } else {
+      // Plain text with current style state
+      runs.push(
+        new TextRun({
+          text: part,
+          bold: bold || undefined,
+          italics: italics || undefined,
+          underline: underline ? {} : undefined,
+          subScript: subScript || undefined,
+          superScript: superScript || undefined,
+        })
+      );
     }
-
-    const tag = match[1].toLowerCase();
-    const content = match[2];
-
-    if (tag === 'sup') {
-      runs.push(new TextRun({ text: content, superScript: true }));
-    } else if (tag === 'sub') {
-      runs.push(new TextRun({ text: content, subScript: true }));
-    } else if (tag === 'b') {
-      runs.push(new TextRun({ text: content, bold: true }));
-    } else if (tag === 'i') {
-      runs.push(new TextRun({ text: content, italics: true }));
-    }
-
-    lastIndex = tagRegex.lastIndex;
-  }
-
-  const remaining = rawText.substring(lastIndex);
-  if (remaining) {
-    runs.push(new TextRun(remaining));
   }
 
   return runs.length > 0 ? runs : [new TextRun(rawText)];
@@ -71,7 +98,7 @@ function parseFormattedTextRuns(rawText: string): TextRun[] {
 
 export class DocExportService {
   /**
-   * Export structured document paragraphs, tables, and diagrams to a native Microsoft Word (.docx) file
+   * Export structured document paragraphs, tables (with images), and diagrams to a native Microsoft Word (.docx) file
    */
   public static async exportToDocx(
     paragraphs: DocParagraph[],
@@ -80,14 +107,14 @@ export class DocExportService {
     const docChildren: (Paragraph | Table)[] = [];
 
     for (const p of paragraphs) {
-      // 0. IMAGES & DIAGRAMS
+      // 0. STANDALONE IMAGES & DIAGRAMS
       if (p.type === 'image' && p.imageUrl) {
         try {
           const imgBytes = dataUrlToUint8Array(p.imageUrl);
           const w = Math.min(p.imageWidth || 450, 480);
           const h = Math.min(p.imageHeight || 280, 350);
-
           const isPng = p.imageUrl.startsWith('data:image/png');
+
           docChildren.push(
             new Paragraph({
               children: [
@@ -127,7 +154,7 @@ export class DocExportService {
         continue;
       }
 
-      // 1. HEADINGS
+      // 1. HEADINGS (H1, H2, H3)
       if (p.type === 'h1') {
         docChildren.push(
           new Paragraph({
@@ -161,56 +188,82 @@ export class DocExportService {
         continue;
       }
 
-      // 2. TABLES
+      // 2. TABLES (WITH SUPPORT FOR TEXT AND IMAGES IN CELLS)
       if (p.type === 'table' && p.tableData && p.tableData.length > 0) {
         const rows = p.tableData.map((rowCells, rowIdx) => {
           const isHeader = rowIdx === 0;
           return new TableRow({
-            children: rowCells.map((cellText) => {
-              return new TableCell({
-                children: [
+            children: rowCells.map((cellContent) => {
+              const cellChildren: (Paragraph)[] = [];
+
+              // Check if cell contains an image (e.g. data:image/ or embedded image tag)
+              if (cellContent && cellContent.includes('data:image/')) {
+                const imgMatch = cellContent.match(/data:image\/[a-zA-Z]+;base64,[^"'\s\)]+/);
+                if (imgMatch) {
+                  try {
+                    const imgBytes = dataUrlToUint8Array(imgMatch[0]);
+                    const isPng = imgMatch[0].startsWith('data:image/png');
+                    cellChildren.push(
+                      new Paragraph({
+                        children: [
+                          new ImageRun({
+                            data: imgBytes,
+                            type: isPng ? 'png' : 'jpg',
+                            transformation: {
+                              width: 140,
+                              height: 100,
+                            },
+                          } as any),
+                        ],
+                        alignment: AlignmentType.CENTER,
+                        spacing: { before: 40, after: 40 },
+                      })
+                    );
+                  } catch (err) {
+                    console.warn('Cell image error:', err);
+                  }
+                }
+
+                // Add any accompanying text without the dataUrl
+                const textOnly = cellContent.replace(/!\[.*?\]\(data:image\/.*?\)|data:image\/[a-zA-Z]+;base64,[^"'\s\)]+/, '').trim();
+                if (textOnly) {
+                  cellChildren.push(
+                    new Paragraph({
+                      children: parseFormattedTextRuns(textOnly),
+                      alignment: AlignmentType.LEFT,
+                      spacing: { before: 20, after: 20 },
+                    })
+                  );
+                }
+              } else {
+                cellChildren.push(
                   new Paragraph({
-                    children: parseFormattedTextRuns(cellText),
+                    children: parseFormattedTextRuns(cellContent),
                     alignment: AlignmentType.LEFT,
                     spacing: { before: 40, after: 40 },
-                  }),
-                ],
-                shading: isHeader
-                  ? { fill: 'F3F4F6' } // Light gray header
-                  : undefined,
+                  })
+                );
+              }
+
+              return new TableCell({
+                children: cellChildren.length > 0 ? cellChildren : [new Paragraph({ text: '' })],
+                shading: isHeader ? { fill: 'F3F4F6' } : undefined,
                 borders: {
                   top: { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' },
                   bottom: { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' },
                   left: { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' },
                   right: { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' },
                 },
-                margins: {
-                  top: 100,
-                  bottom: 100,
-                  left: 140,
-                  right: 140,
-                },
+                margins: { top: 100, bottom: 100, left: 140, right: 140 },
               });
             }),
-            tableHeader: isHeader,
           });
         });
 
-        const docTable = new Table({
-          rows,
-          width: {
-            size: 100,
-            type: WidthType.PERCENTAGE,
-          },
-          alignment: AlignmentType.CENTER,
-        });
-
-        docChildren.push(docTable);
-        // Add spacing after table
         docChildren.push(
-          new Paragraph({
-            children: [],
-            spacing: { before: 80, after: 120 },
+          new Table({
+            rows,
+            width: { size: 100, type: WidthType.PERCENTAGE },
           })
         );
         continue;
@@ -218,13 +271,11 @@ export class DocExportService {
 
       // 3. BULLET LISTS
       if (p.type === 'bullet') {
-        const cleanText = p.text.replace(/^[-•*▪◦–—]\s*/, '');
+        const cleanText = p.text.replace(/^[-•*▪◦–—■►✔✓]\s*/, '');
         docChildren.push(
           new Paragraph({
             children: parseFormattedTextRuns(cleanText),
-            bullet: {
-              level: 0,
-            },
+            bullet: { level: 0 },
             spacing: { before: 40, after: 40 },
           })
         );
@@ -237,7 +288,6 @@ export class DocExportService {
           new Paragraph({
             children: parseFormattedTextRuns(p.text),
             spacing: { before: 40, after: 40 },
-            indent: { left: 360 },
           })
         );
         continue;
@@ -247,7 +297,7 @@ export class DocExportService {
       docChildren.push(
         new Paragraph({
           children: parseFormattedTextRuns(p.text),
-          spacing: { before: 80, after: 80 },
+          spacing: { before: 60, after: 60 },
         })
       );
     }
@@ -256,16 +306,7 @@ export class DocExportService {
       title: docTitle,
       sections: [
         {
-          properties: {
-            page: {
-              margin: {
-                top: 1440, // 1 inch
-                bottom: 1440,
-                left: 1440,
-                right: 1440,
-              },
-            },
-          },
+          properties: {},
           children: docChildren,
         },
       ],
@@ -275,95 +316,112 @@ export class DocExportService {
   }
 
   /**
-   * Export to styled HTML document
+   * Export to HTML with full support for tables, images in cells, formulas, headings, bold, underline, italics
    */
-  public static exportToHtml(paragraphs: DocParagraph[], title: string = 'Document'): string {
-    let html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>${title}</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      line-height: 1.6;
-      color: #1f2937;
-      max-width: 800px;
-      margin: 40px auto;
-      padding: 0 20px;
-    }
-    h1 { font-size: 28px; margin-top: 32px; color: #111827; }
-    h2 { font-size: 22px; margin-top: 24px; color: #1f2937; }
-    h3 { font-size: 18px; margin-top: 20px; color: #374151; }
-    p { margin: 12px 0; }
-    ul, ol { margin: 12px 0; padding-left: 28px; }
-    li { margin-bottom: 6px; }
-    sup { font-size: 75%; line-height: 0; position: relative; vertical-align: baseline; top: -0.5em; }
-    sub { font-size: 75%; line-height: 0; position: relative; vertical-align: baseline; bottom: -0.25em; }
-    table { width: 100%; border-collapse: collapse; margin: 20px 0; }
-    th, td { border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; }
-    th { background-color: #f3f4f6; font-weight: 600; }
-    .figure-box { text-align: center; margin: 24px 0; }
-    .figure-box img { max-width: 100%; border-radius: 8px; border: 1px solid #e5e7eb; }
-    .figure-caption { font-size: 12px; color: #6b7280; margin-top: 6px; font-style: italic; }
-  </style>
-</head>
-<body>\n`;
+  public static exportToHtml(paragraphs: DocParagraph[], docTitle: string = 'Document'): string {
+    let bodyHtml = '';
 
     for (const p of paragraphs) {
       if (p.type === 'image' && p.imageUrl) {
-        html += `  <div class="figure-box">\n`;
-        html += `    <img src="${p.imageUrl}" alt="${p.caption || 'Diagram'}" />\n`;
-        if (p.caption) {
-          html += `    <div class="figure-caption">${p.caption}</div>\n`;
-        }
-        html += `  </div>\n`;
-      } else if (p.type === 'h1') {
-        html += `  <h1>${p.text}</h1>\n`;
-      } else if (p.type === 'h2') {
-        html += `  <h2>${p.text}</h2>\n`;
-      } else if (p.type === 'h3') {
-        html += `  <h3>${p.text}</h3>\n`;
-      } else if (p.type === 'bullet') {
-        html += `  <ul><li>${p.text.replace(/^[-•*▪◦–—]\s*/, '')}</li></ul>\n`;
-      } else if (p.type === 'numbered') {
-        html += `  <ol><li>${p.text}</li></ol>\n`;
-      } else if (p.type === 'table' && p.tableData) {
-        html += `  <table>\n`;
-        p.tableData.forEach((row, rIdx) => {
-          html += `    <tr>\n`;
-          row.forEach((cell) => {
-            if (rIdx === 0) {
-              html += `      <th>${cell}</th>\n`;
-            } else {
-              html += `      <td>${cell}</td>\n`;
-            }
-          });
-          html += `    </tr>\n`;
-        });
-        html += `  </table>\n`;
-      } else {
-        html += `  <p>${p.text}</p>\n`;
+        bodyHtml += `
+          <figure style="text-align: center; margin: 24px 0;">
+            <img src="${p.imageUrl}" alt="${p.caption || 'Figure'}" style="max-width: 100%; height: auto; border-radius: 8px; border: 1px solid #e5e7eb; box-shadow: 0 1px 3px rgba(0,0,0,0.1);" />
+            ${p.caption ? `<figcaption style="font-size: 13px; color: #6b7280; font-style: italic; margin-top: 6px;">${p.caption}</figcaption>` : ''}
+          </figure>
+        `;
+        continue;
       }
+
+      if (p.type === 'h1') {
+        bodyHtml += `<h1 style="font-size: 26px; font-weight: 700; color: #111827; margin: 24px 0 12px 0;">${p.text}</h1>\n`;
+        continue;
+      }
+
+      if (p.type === 'h2') {
+        bodyHtml += `<h2 style="font-size: 20px; font-weight: 600; color: #1f2937; margin: 20px 0 10px 0;">${p.text}</h2>\n`;
+        continue;
+      }
+
+      if (p.type === 'h3') {
+        bodyHtml += `<h3 style="font-size: 16px; font-weight: 600; color: #374151; margin: 16px 0 8px 0;">${p.text}</h3>\n`;
+        continue;
+      }
+
+      if (p.type === 'table' && p.tableData) {
+        bodyHtml += `<table style="width: 100%; border-collapse: collapse; margin: 20px 0; border: 1px solid #d1d5db; font-size: 14px;">\n`;
+        p.tableData.forEach((row, rIdx) => {
+          bodyHtml += `  <tr style="${rIdx === 0 ? 'background-color: #f9fafb; font-weight: 600;' : ''}">\n`;
+          row.forEach((cell) => {
+            const isImg = cell.includes('data:image/');
+            const tag = rIdx === 0 ? 'th' : 'td';
+            bodyHtml += `    <${tag} style="border: 1px solid #d1d5db; padding: 8px 12px; text-align: left;">`;
+            if (isImg) {
+              const match = cell.match(/data:image\/[a-zA-Z]+;base64,[^"'\s\)]+/);
+              if (match) {
+                bodyHtml += `<img src="${match[0]}" alt="Table figure" style="max-width: 160px; max-height: 120px; object-contain; display: block; margin-bottom: 4px;" />`;
+              }
+              const textOnly = cell.replace(/!\[.*?\]\(data:image\/.*?\)|data:image\/[a-zA-Z]+;base64,[^"'\s\)]+/, '').trim();
+              if (textOnly) bodyHtml += `<span>${textOnly}</span>`;
+            } else {
+              bodyHtml += cell;
+            }
+            bodyHtml += `</${tag}>\n`;
+          });
+          bodyHtml += `  </tr>\n`;
+        });
+        bodyHtml += `</table>\n`;
+        continue;
+      }
+
+      if (p.type === 'bullet') {
+        const clean = p.text.replace(/^[-•*▪◦–—■►✔✓]\s*/, '');
+        bodyHtml += `<ul style="margin: 6px 0; padding-left: 24px;"><li style="font-size: 15px; line-height: 1.6; color: #374151;">${clean}</li></ul>\n`;
+        continue;
+      }
+
+      if (p.type === 'numbered') {
+        bodyHtml += `<p style="margin: 6px 0; font-size: 15px; line-height: 1.6; color: #374151;">${p.text}</p>\n`;
+        continue;
+      }
+
+      bodyHtml += `<p style="font-size: 15px; line-height: 1.6; color: #374151; margin: 10px 0;">${p.text}</p>\n`;
     }
 
-    html += `</body>\n</html>`;
-    return html;
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>${docTitle}</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      max-width: 800px;
+      margin: 40px auto;
+      padding: 0 20px;
+      color: #1f2937;
+      background: #ffffff;
+    }
+    table, th, td { border: 1px solid #d1d5db; }
+    sub { vertical-align: sub; font-size: smaller; }
+    sup { vertical-align: super; font-size: smaller; }
+    u { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  ${bodyHtml}
+</body>
+</html>`;
   }
 
   /**
-   * Export to formatted plain text
+   * Export to Plain Text
    */
-  public static exportToPlainText(paragraphs: DocParagraph[]): string {
+  public static exportToTxt(paragraphs: DocParagraph[]): string {
     return paragraphs
       .map((p) => {
-        if (p.type === 'image') {
-          return `\n[FIGURE / DIAGRAM: ${p.caption || 'Embedded Image'}]\n`;
-        }
         if (p.type === 'table' && p.tableData) {
-          return p.tableData.map((r) => r.join('\t|\t')).join('\n');
+          return p.tableData.map((row) => row.join('\t')).join('\n');
         }
-        // Strip html tags for plain text
         return p.text.replace(/<[^>]+>/g, '');
       })
       .join('\n\n');

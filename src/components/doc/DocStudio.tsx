@@ -15,9 +15,13 @@ import {
   Check,
   Superscript,
   Subscript,
+  Bold,
+  Italic,
+  Underline,
   PlusCircle,
   Image as ImageIcon,
   Upload,
+  Sparkles,
 } from 'lucide-react';
 import type { DocParagraph } from '../../types/pdf';
 import { PdfRenderService, cleanSubSuperTags } from '../../services/pdfRenderService';
@@ -41,9 +45,23 @@ export const DocStudio: React.FC<DocStudioProps> = ({
   const [copied, setCopied] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
 
-  // Hidden image input ref
+  // Hidden image input refs
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cellFileInputRef = useRef<HTMLInputElement>(null);
   const [insertImageTargetPageIndex, setInsertImageTargetPageIndex] = useState<number>(0);
+  const [targetCellCoords, setTargetCellCoords] = useState<{
+    paraId: string;
+    rowIdx: number;
+    colIdx: number;
+  } | null>(null);
+
+  // Active focused textarea or table input for formatting toolbar
+  const [activeElementInfo, setActiveElementInfo] = useState<{
+    paraId: string;
+    isTableCell?: boolean;
+    rowIdx?: number;
+    colIdx?: number;
+  } | null>(null);
 
   // Auto-resize all textareas
   const textareaRefs = useRef<Map<string, HTMLTextAreaElement>>(new Map());
@@ -179,6 +197,52 @@ export const DocStudio: React.FC<DocStudioProps> = ({
     e.target.value = '';
   };
 
+  // Table cell image insertion handler
+  const handleInsertCellImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !targetCellCoords) return;
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const dataUrl = ev.target?.result as string;
+      if (dataUrl) {
+        const { paraId, rowIdx, colIdx } = targetCellCoords;
+        setParagraphs((prev) =>
+          prev.map((p) => {
+            if (p.id === paraId && p.tableData) {
+              const currentCell = p.tableData[rowIdx]?.[colIdx] || '';
+              const newCell = `![img](${dataUrl}) ${currentCell.replace(/!\[.*?\]\(.*?\)/, '').trim()}`.trim();
+              const newTable = p.tableData.map((row, r) =>
+                r === rowIdx ? row.map((cell, c) => (c === colIdx ? newCell : cell)) : [...row]
+              );
+              return { ...p, tableData: newTable };
+            }
+            return p;
+          })
+        );
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+    setTargetCellCoords(null);
+  };
+
+  const handleRemoveCellImage = (paraId: string, rowIdx: number, colIdx: number) => {
+    setParagraphs((prev) =>
+      prev.map((p) => {
+        if (p.id === paraId && p.tableData) {
+          const currentCell = p.tableData[rowIdx]?.[colIdx] || '';
+          const cleaned = currentCell.replace(/!\[.*?\]\(.*?\)|data:image\/[a-zA-Z]+;base64,[^"'\s\)]+/, '').trim();
+          const newTable = p.tableData.map((row, r) =>
+            r === rowIdx ? row.map((cell, c) => (c === colIdx ? cleaned : cell)) : [...row]
+          );
+          return { ...p, tableData: newTable };
+        }
+        return p;
+      })
+    );
+  };
+
   // Table manipulation handlers
   const handleUpdateTableCell = (
     paraId: string,
@@ -239,24 +303,48 @@ export const DocStudio: React.FC<DocStudioProps> = ({
     );
   };
 
-  const handleInsertTag = (paraId: string, tag: 'sup' | 'sub') => {
-    const el = textareaRefs.current.get(paraId);
-    if (!el) return;
-    const start = el.selectionStart;
-    const end = el.selectionEnd;
-    const val = el.value;
-    const selected = val.substring(start, end) || (tag === 'sup' ? '2' : '2');
+  // Formatting Tag Wrap Handler (Bold, Italic, Underline, Sub, Sup)
+  const handleApplyFormatting = (tag: 'b' | 'i' | 'u' | 'sub' | 'sup') => {
+    const activeEl = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
+    if (!activeEl) return;
+
+    const start = activeEl.selectionStart || 0;
+    const end = activeEl.selectionEnd || 0;
+    const val = activeEl.value || '';
+    const selected = val.substring(start, end) || (tag === 'b' ? 'bold text' : tag === 'i' ? 'italic text' : 'text');
     const cleanSelected = selected.trim();
     if (!cleanSelected) return;
 
     const replacement = `<${tag}>${cleanSelected}</${tag}>`;
     const newText = val.substring(0, start) + replacement + val.substring(end);
 
-    handleUpdateParagraph(paraId, newText);
+    // If active element is a table cell
+    if (activeElementInfo?.isTableCell && activeElementInfo.rowIdx !== undefined && activeElementInfo.colIdx !== undefined) {
+      handleUpdateTableCell(activeElementInfo.paraId, activeElementInfo.rowIdx, activeElementInfo.colIdx, newText);
+    } else if (activeElementInfo?.paraId) {
+      handleUpdateParagraph(activeElementInfo.paraId, newText);
+    }
+
     setTimeout(() => {
-      el.focus();
-      el.setSelectionRange(start + replacement.length, start + replacement.length);
+      activeEl.focus();
+      activeEl.setSelectionRange(start + replacement.length, start + replacement.length);
     }, 50);
+  };
+
+  // Keyboard shortcut listener for formatting in textareas/inputs
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>, paraId: string) => {
+    if (e.ctrlKey || e.metaKey) {
+      if (e.key === 'b' || e.key === 'B') {
+        e.preventDefault();
+        handleApplyFormatting('b');
+      } else if (e.key === 'i' || e.key === 'I') {
+        e.preventDefault();
+        handleApplyFormatting('i');
+      } else if (e.key === 'u' || e.key === 'U') {
+        e.preventDefault();
+        handleApplyFormatting('u');
+      }
+    }
   };
 
   // Export handlers
@@ -303,7 +391,7 @@ export const DocStudio: React.FC<DocStudioProps> = ({
 
   const handleExportTxt = () => {
     const baseName = fileName.replace(/\.pdf$/i, '');
-    const txt = DocExportService.exportToPlainText(paragraphs);
+    const txt = DocExportService.exportToTxt(paragraphs);
     const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -315,107 +403,153 @@ export const DocStudio: React.FC<DocStudioProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  const handleCopyAll = async () => {
-    const txt = DocExportService.exportToPlainText(paragraphs);
-    await navigator.clipboard.writeText(txt);
+  const handleCopyText = () => {
+    const text = DocExportService.exportToTxt(paragraphs);
+    navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Group paragraphs by page index
+  // Group paragraphs by page
   const pagesMap = new Map<number, { globalIndex: number; para: DocParagraph }[]>();
-  paragraphs.forEach((p, idx) => {
-    const pageNum = p.pageIndex || 0;
-    if (!pagesMap.has(pageNum)) {
-      pagesMap.set(pageNum, []);
+  paragraphs.forEach((para, idx) => {
+    const pIdx = para.pageIndex || 0;
+    if (!pagesMap.has(pIdx)) {
+      pagesMap.set(pIdx, []);
     }
-    pagesMap.get(pageNum)!.push({ globalIndex: idx, para: p });
+    pagesMap.get(pIdx)!.push({ globalIndex: idx, para });
   });
 
   const pageKeys = Array.from(pagesMap.keys()).sort((a, b) => a - b);
 
   return (
-    <div className="flex-1 flex flex-col bg-[#f5f5f7] overflow-hidden select-none">
-      {/* Hidden File Input for Custom Image Insertion */}
+    <div className="flex-1 flex flex-col h-full bg-[#f5f5f7] overflow-hidden select-none">
+      {/* Hidden File Inputs */}
       <input
-        type="file"
         ref={fileInputRef}
-        accept="image/png, image/jpeg, image/webp"
+        type="file"
+        accept="image/*"
         className="hidden"
         onChange={handleInsertCustomImage}
       />
+      <input
+        ref={cellFileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handleInsertCellImageUpload}
+      />
 
-      {/* Top Doc Toolbar */}
-      <div className="h-12 bg-white/80 backdrop-blur-xl border-b border-black/5 px-6 flex items-center justify-between shrink-0 z-20">
-        <div className="flex items-center space-x-2.5">
-          <span className="text-xs font-semibold text-slate-800">Document Editor</span>
-          <span className="text-[11px] text-slate-400">
-            • {paragraphs.length} sections across {pageKeys.length}{' '}
-            {pageKeys.length === 1 ? 'page' : 'pages'}
-          </span>
+      {/* DOCKED FORMATTING & EXPORT HEADER */}
+      <div className="bg-white/95 backdrop-blur-xl border-b border-black/10 px-6 py-2 flex flex-wrap items-center justify-between gap-3 shrink-0 z-20 shadow-xs">
+        {/* Left: Search & Word Count */}
+        <div className="flex items-center space-x-3">
+          <div className="relative w-48 md:w-56">
+            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search document..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-8 pr-3 py-1 bg-black/5 rounded-lg text-xs outline-none focus:bg-white focus:ring-1 focus:ring-[#0071e3] transition-all text-slate-800 placeholder-slate-400"
+            />
+          </div>
+
+          <div className="hidden sm:flex items-center space-x-2 text-[11px] font-medium text-slate-400">
+            <span>{paragraphs.length} sections</span>
+            <span>•</span>
+            <span>{paragraphs.filter((p) => p.type === 'table').length} tables</span>
+            <span>•</span>
+            <span>{paragraphs.filter((p) => p.type === 'image').length} diagrams</span>
+          </div>
         </div>
 
-        {/* Search Bar */}
-        <div className="hidden md:flex items-center bg-black/5 rounded-lg px-2.5 py-1 w-56 border border-black/5">
-          <Search className="w-3.5 h-3.5 text-slate-400 mr-2 shrink-0" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search text..."
-            className="bg-transparent text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none w-full"
-          />
-        </div>
-
-        {/* Action Buttons */}
-        <div className="flex items-center space-x-1.5">
+        {/* Center: RICH FORMATTING TOOLBAR */}
+        <div className="flex items-center bg-black/5 p-0.5 rounded-lg space-x-0.5">
           <button
-            onClick={handleCopyAll}
-            className="flex items-center space-x-1 px-2.5 py-1 rounded-lg text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-black/5 transition-colors"
-            title="Copy Text"
+            onClick={() => handleApplyFormatting('b')}
+            className="p-1.5 rounded hover:bg-white text-slate-700 hover:text-[#0071e3] transition-all"
+            title="Bold (Ctrl+B)"
+          >
+            <Bold className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => handleApplyFormatting('i')}
+            className="p-1.5 rounded hover:bg-white text-slate-700 hover:text-[#0071e3] transition-all"
+            title="Italic (Ctrl+I)"
+          >
+            <Italic className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => handleApplyFormatting('u')}
+            className="p-1.5 rounded hover:bg-white text-slate-700 hover:text-[#0071e3] transition-all"
+            title="Underline (Ctrl+U)"
+          >
+            <Underline className="w-3.5 h-3.5" />
+          </button>
+          <div className="w-[1px] h-3.5 bg-black/10 mx-0.5" />
+          <button
+            onClick={() => handleApplyFormatting('sub')}
+            className="p-1.5 rounded hover:bg-white text-slate-700 hover:text-[#0071e3] transition-all"
+            title="Subscript (X₂)"
+          >
+            <Subscript className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => handleApplyFormatting('sup')}
+            className="p-1.5 rounded hover:bg-white text-slate-700 hover:text-[#0071e3] transition-all"
+            title="Superscript (X²)"
+          >
+            <Superscript className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {/* Right: Export & Copy Actions */}
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={handleCopyText}
+            className="flex items-center space-x-1.5 px-3 py-1.5 bg-black/5 hover:bg-black/10 text-slate-700 text-xs font-medium rounded-lg transition-colors"
+            title="Copy all text to clipboard"
           >
             {copied ? <Check className="w-3.5 h-3.5 text-[#34c759]" /> : <Copy className="w-3.5 h-3.5" />}
-            <span className="hidden sm:inline">{copied ? 'Copied' : 'Copy'}</span>
-          </button>
-
-          <button
-            onClick={handleExportTxt}
-            className="px-2.5 py-1 rounded-lg text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-black/5 transition-colors"
-            title="Export TXT"
-          >
-            TXT
+            <span>{copied ? 'Copied' : 'Copy'}</span>
           </button>
 
           <button
             onClick={handleExportHtml}
-            className="px-2.5 py-1 rounded-lg text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-black/5 transition-colors"
-            title="Export HTML"
+            className="hidden md:flex items-center space-x-1 px-3 py-1.5 bg-black/5 hover:bg-black/10 text-slate-700 text-xs font-medium rounded-lg transition-colors"
           >
-            HTML
+            <Download className="w-3.5 h-3.5" />
+            <span>HTML</span>
+          </button>
+
+          <button
+            onClick={handleExportTxt}
+            className="hidden md:flex items-center space-x-1 px-3 py-1.5 bg-black/5 hover:bg-black/10 text-slate-700 text-xs font-medium rounded-lg transition-colors"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>TXT</span>
           </button>
 
           <button
             onClick={handleExportDocx}
-            disabled={isExporting || paragraphs.length === 0}
-            className="flex items-center space-x-1.5 bg-[#0071e3] hover:bg-[#0077ED] text-white font-medium text-xs px-3.5 py-1 rounded-lg shadow-xs transition-all active:scale-98 disabled:opacity-40"
-            title="Download Word (.docx)"
+            disabled={isExporting}
+            className="flex items-center space-x-1.5 px-4 py-1.5 bg-[#0071e3] hover:bg-[#0077ED] active:scale-98 text-white text-xs font-medium rounded-lg shadow-xs transition-all disabled:opacity-50"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Export .docx</span>
+            <span>{isExporting ? 'Exporting...' : 'Export Word (.docx)'}</span>
           </button>
         </div>
       </div>
 
-      {/* Main Document Sheets Canvas */}
-      <div className="flex-1 overflow-y-auto p-6 md:p-10 flex flex-col items-center">
+      {/* MAIN DOCUMENT VIEWPORT */}
+      <div className="flex-1 overflow-y-auto overflow-x-auto p-4 md:p-8 flex justify-center">
         {isLoading ? (
-          <div className="flex flex-col items-center justify-center space-y-3 m-auto py-24">
+          <div className="flex flex-col items-center justify-center space-y-3 m-auto">
             <div className="w-8 h-8 border-2 border-slate-300 border-t-[#0071e3] rounded-full animate-spin" />
-            <span className="text-xs text-slate-500">Extracting text & diagrams...</span>
-          </div>
-        ) : paragraphs.length === 0 ? (
-          <div className="text-center py-20 text-slate-400 text-xs">
-            No content found.
+            <span className="text-xs font-medium text-slate-500">
+              Extracting document structure, tables, and diagrams...
+            </span>
           </div>
         ) : (
           <div className="w-full max-w-3xl space-y-6 select-text">
@@ -563,35 +697,13 @@ export const DocStudio: React.FC<DocStudioProps> = ({
                               </button>
 
                               <div className="w-[1px] h-3 bg-black/10 mx-0.5" />
-
-                              {para.type !== 'table' && (
-                                <>
-                                  <button
-                                    onClick={() => handleInsertTag(para.id, 'sup')}
-                                    className="p-1 rounded hover:bg-black/5 text-slate-500"
-                                    title="Superscript"
-                                  >
-                                    <Superscript className="w-3.5 h-3.5" />
-                                  </button>
-
-                                  <button
-                                    onClick={() => handleInsertTag(para.id, 'sub')}
-                                    className="p-1 rounded hover:bg-black/5 text-slate-500"
-                                    title="Subscript"
-                                  >
-                                    <Subscript className="w-3.5 h-3.5" />
-                                  </button>
-
-                                  <div className="w-[1px] h-3 bg-black/10 mx-0.5" />
-                                </>
-                              )}
                             </>
                           )}
 
                           <button
                             onClick={() => handleAddParagraph(globalIndex, pageNum, 'p')}
-                            className="p-1 rounded hover:bg-black/5 text-[#34c759]"
-                            title="Insert below"
+                            className="p-1 rounded hover:bg-black/5 text-[#0071e3]"
+                            title="Insert paragraph below"
                           >
                             <Plus className="w-3.5 h-3.5" />
                           </button>
@@ -625,7 +737,7 @@ export const DocStudio: React.FC<DocStudioProps> = ({
                           </div>
                         )}
 
-                        {/* TABLE VIEW */}
+                        {/* TABLE VIEW (WITH FULL IMAGE-IN-CELL AND FORMATTING SUPPORT) */}
                         {para.type === 'table' && para.tableData && (
                           <div className="overflow-x-auto py-1">
                             <div className="flex items-center justify-between mb-1.5">
@@ -659,26 +771,71 @@ export const DocStudio: React.FC<DocStudioProps> = ({
                                       rIdx === 0 ? 'bg-slate-50 font-medium' : 'hover:bg-slate-50/50'
                                     }
                                   >
-                                    {row.map((cell, cIdx) => (
-                                      <td
-                                        key={`c-${rIdx}-${cIdx}`}
-                                        className="border border-slate-200 p-1 relative"
-                                      >
-                                        <input
-                                          type="text"
-                                          value={cell}
-                                          onChange={(e) =>
-                                            handleUpdateTableCell(
-                                              para.id,
-                                              rIdx,
-                                              cIdx,
-                                              e.target.value
-                                            )
-                                          }
-                                          className="w-full bg-transparent border-0 outline-none text-slate-800 text-xs focus:ring-1 focus:ring-[#0071e3] rounded px-1"
-                                        />
-                                      </td>
-                                    ))}
+                                    {row.map((cell, cIdx) => {
+                                      const hasCellImage = cell.includes('data:image/');
+                                      const imgUrlMatch = cell.match(/data:image\/[a-zA-Z]+;base64,[^"'\s\)]+/);
+                                      const cellTextOnly = cell.replace(/!\[.*?\]\(.*?\)|data:image\/[a-zA-Z]+;base64,[^"'\s\)]+/, '').trim();
+
+                                      return (
+                                        <td
+                                          key={`c-${rIdx}-${cIdx}`}
+                                          className="border border-slate-200 p-1.5 relative group/cell"
+                                        >
+                                          {/* Render Cell Image Thumbnail if exists */}
+                                          {hasCellImage && imgUrlMatch && (
+                                            <div className="relative mb-1.5 p-1 bg-white border border-black/10 rounded-md max-w-fit">
+                                              <img
+                                                src={imgUrlMatch[0]}
+                                                alt="Cell Figure"
+                                                className="max-h-20 max-w-full object-contain rounded"
+                                              />
+                                              <button
+                                                onClick={() => handleRemoveCellImage(para.id, rIdx, cIdx)}
+                                                className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full p-0.5 shadow-xs hover:bg-red-600"
+                                                title="Remove cell image"
+                                              >
+                                                <Trash2 className="w-2.5 h-2.5" />
+                                              </button>
+                                            </div>
+                                          )}
+
+                                          <div className="flex items-center space-x-1">
+                                            <input
+                                              type="text"
+                                              value={cellTextOnly || (hasCellImage ? '' : cell)}
+                                              onFocus={() =>
+                                                setActiveElementInfo({
+                                                  paraId: para.id,
+                                                  isTableCell: true,
+                                                  rowIdx: rIdx,
+                                                  colIdx: cIdx,
+                                                })
+                                              }
+                                              onKeyDown={(e) => handleKeyDown(e, para.id)}
+                                              onChange={(e) => {
+                                                const newText = hasCellImage && imgUrlMatch
+                                                  ? `![img](${imgUrlMatch[0]}) ${e.target.value}`
+                                                  : e.target.value;
+                                                handleUpdateTableCell(para.id, rIdx, cIdx, newText);
+                                              }}
+                                              className="w-full bg-transparent border-0 outline-none text-slate-800 text-xs focus:ring-1 focus:ring-[#0071e3] rounded px-1"
+                                            />
+
+                                            {/* Button to insert image into cell */}
+                                            <button
+                                              onClick={() => {
+                                                setTargetCellCoords({ paraId: para.id, rowIdx: rIdx, colIdx: cIdx });
+                                                cellFileInputRef.current?.click();
+                                              }}
+                                              className="opacity-0 group-hover/cell:opacity-100 p-0.5 hover:bg-black/5 text-slate-400 hover:text-[#0071e3] rounded transition-opacity"
+                                              title="Insert image into cell"
+                                            >
+                                              <ImageIcon className="w-3 h-3" />
+                                            </button>
+                                          </div>
+                                        </td>
+                                      );
+                                    })}
                                     {para.tableData!.length > 1 && (
                                       <td className="w-5 border-0 text-center">
                                         <button
@@ -706,6 +863,8 @@ export const DocStudio: React.FC<DocStudioProps> = ({
                             }}
                             rows={1}
                             value={para.text}
+                            onFocus={() => setActiveElementInfo({ paraId: para.id })}
+                            onKeyDown={(e) => handleKeyDown(e, para.id)}
                             onChange={(e) => handleUpdateParagraph(para.id, e.target.value)}
                             className="w-full bg-transparent text-xl font-bold text-[#1d1d1f] border-0 outline-none resize-none overflow-hidden focus:ring-1 focus:ring-[#0071e3] rounded p-1"
                           />
@@ -720,6 +879,8 @@ export const DocStudio: React.FC<DocStudioProps> = ({
                             }}
                             rows={1}
                             value={para.text}
+                            onFocus={() => setActiveElementInfo({ paraId: para.id })}
+                            onKeyDown={(e) => handleKeyDown(e, para.id)}
                             onChange={(e) => handleUpdateParagraph(para.id, e.target.value)}
                             className="w-full bg-transparent text-base font-semibold text-[#1d1d1f] border-0 outline-none resize-none overflow-hidden focus:ring-1 focus:ring-[#0071e3] rounded p-1"
                           />
@@ -734,6 +895,8 @@ export const DocStudio: React.FC<DocStudioProps> = ({
                             }}
                             rows={1}
                             value={para.text}
+                            onFocus={() => setActiveElementInfo({ paraId: para.id })}
+                            onKeyDown={(e) => handleKeyDown(e, para.id)}
                             onChange={(e) => handleUpdateParagraph(para.id, e.target.value)}
                             className="w-full bg-transparent text-sm font-semibold text-[#1d1d1f] border-0 outline-none resize-none overflow-hidden focus:ring-1 focus:ring-[#0071e3] rounded p-1"
                           />
@@ -750,6 +913,8 @@ export const DocStudio: React.FC<DocStudioProps> = ({
                               }}
                               rows={1}
                               value={para.text.replace(/^[-•*▪◦–—■►✔✓]\s*/, '')}
+                              onFocus={() => setActiveElementInfo({ paraId: para.id })}
+                              onKeyDown={(e) => handleKeyDown(e, para.id)}
                               onChange={(e) => handleUpdateParagraph(para.id, '• ' + e.target.value)}
                               className="w-full bg-transparent text-sm leading-relaxed text-slate-700 border-0 outline-none resize-none overflow-hidden focus:ring-1 focus:ring-[#0071e3] rounded p-1"
                             />
@@ -774,6 +939,8 @@ export const DocStudio: React.FC<DocStudioProps> = ({
                                 /^(\d+(\.\d+)*[\.\)]|\([0-9a-zA-Z]+\)(\([0-9a-zA-Z]+\))*|[a-zA-Z][\.\)]|\[[0-9a-zA-Z\s:]+\]|[ivxlcdmIVXLCDM]+[\.\)]|\d+\s*\([a-z0-9]+\))\s*/i,
                                 ''
                               )}
+                              onFocus={() => setActiveElementInfo({ paraId: para.id })}
+                              onKeyDown={(e) => handleKeyDown(e, para.id)}
                               onChange={(e) => {
                                 const prefix =
                                   para.text.match(
@@ -795,6 +962,8 @@ export const DocStudio: React.FC<DocStudioProps> = ({
                             }}
                             rows={1}
                             value={para.text}
+                            onFocus={() => setActiveElementInfo({ paraId: para.id })}
+                            onKeyDown={(e) => handleKeyDown(e, para.id)}
                             onChange={(e) => handleUpdateParagraph(para.id, e.target.value)}
                             className="w-full bg-transparent text-sm leading-relaxed text-slate-700 border-0 outline-none resize-none overflow-hidden focus:ring-1 focus:ring-[#0071e3] rounded p-1"
                           />
@@ -811,3 +980,5 @@ export const DocStudio: React.FC<DocStudioProps> = ({
     </div>
   );
 };
+
+export default DocStudio;
