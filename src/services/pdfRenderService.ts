@@ -553,7 +553,7 @@ export class PdfRenderService {
         if (!sctx) continue;
 
         sctx.drawImage(
-          pageCanvas,
+          drawingCanvas,
           cropX,
           cropY,
           cropW,
