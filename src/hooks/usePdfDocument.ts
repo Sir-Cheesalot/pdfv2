@@ -5,9 +5,12 @@ import type {
   PdfMetadata,
   WatermarkConfig,
   EditorMode,
+  RebuiltPage,
+  RebuiltTextElement,
 } from '../types/pdf';
 import { PdfService } from '../services/pdfService';
 import { PdfRenderService } from '../services/pdfRenderService';
+import { PdfRebuildService } from '../services/pdfRebuildService';
 import confetti from 'canvas-confetti';
 
 export interface HistoryState {
@@ -25,6 +28,7 @@ export function usePdfDocument() {
   const [annotations, setAnnotations] = useState<Record<number, Annotation[]>>({});
   const [metadata, setMetadata] = useState<PdfMetadata>({});
   const [watermark, setWatermark] = useState<WatermarkConfig | null>(null);
+  const [rebuiltPages, setRebuiltPages] = useState<any[]>([]);
 
   const [mode, setMode] = useState<EditorMode>('doc');
   const [zoom, setZoom] = useState<number>(1.25);
@@ -447,12 +451,82 @@ export function usePdfDocument() {
     [pdfBytes, docId]
   );
 
+  const updateRebuiltTextElement = useCallback(
+    (pageIndex: number, elemId: string, newText: string, updates?: Partial<RebuiltTextElement>) => {
+      setRebuiltPages((prev) =>
+        prev.map((p) => {
+          if (p.pageIndex === pageIndex) {
+            const updatedTexts = p.textElements.map((t: RebuiltTextElement) =>
+              t.id === elemId ? { ...t, text: newText, ...updates } : t
+            );
+            return { ...p, textElements: updatedTexts };
+          }
+          return p;
+        })
+      );
+    },
+    []
+  );
+
+  const deleteRebuiltTextElement = useCallback((pageIndex: number, elemId: string) => {
+    setRebuiltPages((prev) =>
+      prev.map((p) => {
+        if (p.pageIndex === pageIndex) {
+          return {
+            ...p,
+            textElements: p.textElements.filter((t: RebuiltTextElement) => t.id !== elemId),
+          };
+        }
+        return p;
+      })
+    );
+  }, []);
+
+  const exportRebuiltPdf = useCallback(
+    async (downloadName?: string) => {
+      if (rebuiltPages.length === 0 && !pdfBytes) return;
+      setIsProcessing(true);
+      setStatusMessage('Rebuilding clean vector PDF...');
+      try {
+        let pagesToCompile = rebuiltPages;
+        if (pagesToCompile.length === 0 && pdfBytes) {
+          pagesToCompile = await PdfRebuildService.parsePdfToRebuiltPages(pdfBytes);
+        }
+
+        const outBytes = await PdfRebuildService.compileRebuiltPagesToPdf(pagesToCompile, fileName);
+        const blob = new Blob([outBytes as any], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = downloadName || fileName.replace(/\.pdf$/i, '') + '_rebuilt.pdf';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        confetti({
+          particleCount: 100,
+          spread: 70,
+          origin: { y: 0.6 },
+        });
+      } catch (err) {
+        console.error('Failed to export rebuilt PDF:', err);
+        alert('Failed to rebuild PDF: ' + (err as Error).message);
+      } finally {
+        setIsProcessing(false);
+        setStatusMessage('');
+      }
+    },
+    [rebuiltPages, pdfBytes, fileName]
+  );
+
   return {
     docId,
     fileName,
     fileSize,
     pdfBytes,
     pages,
+    rebuiltPages,
     activePageIndex,
     annotations,
     metadata,
@@ -471,6 +545,7 @@ export function usePdfDocument() {
     setZoom,
     setWatermark,
     setMetadata,
+    setRebuiltPages,
     loadPdfDocument,
     loadSamplePdf,
     reorderPages,
@@ -482,6 +557,9 @@ export function usePdfDocument() {
     insertExternalPages,
     updatePageAnnotations,
     updatePageTextInStream,
+    updateRebuiltTextElement,
+    deleteRebuiltTextElement,
+    exportRebuiltPdf,
     exportBakedPdf,
     undo,
     redo,

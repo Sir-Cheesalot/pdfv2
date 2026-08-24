@@ -181,3 +181,49 @@ export interface DocParagraph {
   pageIndex: number;
   orderY?: number; // Visual vertical coordinate for natural ordering
 }
+
+export interface RebuiltTextElement {
+  id: string;
+  text: string;
+  x: number; // PDF points
+  y: number; // PDF points from top
+  width: number;
+  height: number;
+  fontSize: number;
+  fontFamily: string;
+  color: string;
+  bold?: boolean;
+  italic?: boolean;
+}
+
+export interface RebuiltImageElement {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dataUrl: string;
+  caption?: string;
+}
+
+export interface RebuiltVectorElement {
+  id: string;
+  type: 'rect' | 'line';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  strokeColor?: string;
+  fillColor?: string;
+  strokeWidth?: number;
+}
+
+export interface RebuiltPage {
+  pageIndex: number;
+  width: number; // in PDF points
+  height: number; // in PDF points
+  rotation: number;
+  textElements: RebuiltTextElement[];
+  imageElements: RebuiltImageElement[];
+  vectorElements: RebuiltVectorElement[];
+}

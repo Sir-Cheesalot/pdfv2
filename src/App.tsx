@@ -55,10 +55,13 @@ export const App: React.FC = () => {
     rotateAllPages,
     deletePage,
     duplicatePage,
+    rebuiltPages,
     insertBlankPage,
     insertExternalPages,
     updatePageAnnotations,
     updatePageTextInStream,
+    updateRebuiltTextElement,
+    exportRebuiltPdf,
     exportBakedPdf,
     undo,
     redo,
@@ -401,7 +404,7 @@ export const App: React.FC = () => {
         onZoomChange={setZoom}
         onUndo={undo}
         onRedo={redo}
-        onExport={() => exportBakedPdf()}
+        onExport={() => exportRebuiltPdf()}
         onOpenWatermark={() => setIsWatermarkModalOpen(true)}
         onOpenMetadata={() => setIsMetadataModalOpen(true)}
         onLoadSample={loadSamplePdf}
@@ -587,6 +590,8 @@ export const App: React.FC = () => {
                 annotations={annotations}
                 watermark={watermark}
                 selectedAnnotationId={selectedAnnotationId}
+                rebuiltPages={rebuiltPages}
+                onUpdateRebuiltText={updateRebuiltTextElement}
                 onSelectPage={setActivePageIndex}
                 onSelectAnnotation={setSelectedAnnotationId}
                 onUpdateAnnotations={updatePageAnnotations}
