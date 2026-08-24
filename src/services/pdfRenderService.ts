@@ -50,6 +50,65 @@ export function cleanSubSuperTags(text: string): string {
   return cleaned;
 }
 
+/**
+ * Intelligent Bounding-Box Auto-Crop:
+ * Trims away empty white margins to extract tightly bounded, crisp diagrams and figures
+ */
+function autoTrimCanvas(canvas: HTMLCanvasElement): HTMLCanvasElement | null {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  const { width, height } = canvas;
+  const imgData = ctx.getImageData(0, 0, width, height);
+  const data = imgData.data;
+
+  let minX = width;
+  let minY = height;
+  let maxX = 0;
+  let maxY = 0;
+  let nonWhitePixels = 0;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      const a = data[idx + 3];
+
+      // Detect non-white pixels (with slight noise tolerance)
+      if (a > 30 && (r < 235 || g < 235 || b < 235)) {
+        nonWhitePixels++;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  // Must contain significant visual content to be a real figure
+  if (nonWhitePixels < 90 || maxX - minX < 24 || maxY - minY < 24) return null;
+
+  // Add 16px padding
+  const padding = 16;
+  const cropX = Math.max(0, minX - padding);
+  const cropY = Math.max(0, minY - padding);
+  const cropW = Math.min(width - cropX, maxX - minX + padding * 2);
+  const cropH = Math.min(height - cropY, maxY - minY + padding * 2);
+
+  const trimmedCanvas = document.createElement('canvas');
+  trimmedCanvas.width = cropW;
+  trimmedCanvas.height = cropH;
+  const tctx = trimmedCanvas.getContext('2d');
+  if (!tctx) return null;
+
+  tctx.fillStyle = '#ffffff';
+  tctx.fillRect(0, 0, cropW, cropH);
+  tctx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+  return trimmedCanvas;
+}
+
 export class PdfRenderService {
   private static documentCache: Map<string, pdfjsLib.PDFDocumentProxy> = new Map();
 
@@ -159,7 +218,6 @@ export class PdfRenderService {
     ctx.save();
     ctx.scale(outputScale, outputScale);
 
-    // Draw white background
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, viewport.width, viewport.height);
 
@@ -246,6 +304,7 @@ export class PdfRenderService {
                 height: (w.bbox.y1 - w.bbox.y0) / scale,
                 fontSize: Math.round(((w.bbox.y1 - w.bbox.y0) / scale) * 0.85) || 12,
                 fontName: 'Helvetica',
+                originalTransform: [1, 0, 0, 1, w.bbox.x0 / scale, w.bbox.y0 / scale],
               });
             }
           });
@@ -259,7 +318,8 @@ export class PdfRenderService {
   }
 
   /**
-   * Extract diagrams, visual figures, and images from a page
+   * High-Precision Diagram & Figure Extraction:
+   * Renders at high-res (scale 2.5), auto-trims whitespace margins, and crops tightly around graphs, diagrams, and illustrations.
    */
   public static async extractPageDiagramsAndFigures(
     pdfDoc: pdfjsLib.PDFDocumentProxy,
@@ -270,7 +330,7 @@ export class PdfRenderService {
 
     try {
       const page = await pdfDoc.getPage(pageNumber);
-      const scale = 1.5;
+      const scale = 2.5; // High resolution for crisp graphics
       const viewport = page.getViewport({ scale });
 
       const pageCanvas = document.createElement('canvas');
@@ -293,22 +353,25 @@ export class PdfRenderService {
 
       const gaps: GapRegion[] = [];
 
-      if (sortedY.length > 0 && pageHeightPt - sortedY[0].topY > 100) {
-        gaps.push({ topY: pageHeightPt - 30, bottomY: sortedY[0].topY + 10 });
+      // Gap between top of page and first text line
+      if (sortedY.length > 0 && pageHeightPt - sortedY[0].topY > 90) {
+        gaps.push({ topY: pageHeightPt - 20, bottomY: sortedY[0].topY + 10 });
       }
 
+      // Gaps between consecutive text lines
       for (let i = 0; i < sortedY.length - 1; i++) {
         const upper = sortedY[i];
         const lower = sortedY[i + 1];
         const gapPt = upper.bottomY - lower.topY;
 
-        if (gapPt >= 55) {
-          gaps.push({ topY: upper.bottomY - 5, bottomY: lower.topY + 5 });
+        if (gapPt >= 45) {
+          gaps.push({ topY: upper.bottomY - 4, bottomY: lower.topY + 4 });
         }
       }
 
-      if (sortedY.length > 0 && sortedY[sortedY.length - 1].bottomY > 100) {
-        gaps.push({ topY: sortedY[sortedY.length - 1].bottomY - 10, bottomY: 30 });
+      // Gap between last text line and bottom of page
+      if (sortedY.length > 0 && sortedY[sortedY.length - 1].bottomY > 90) {
+        gaps.push({ topY: sortedY[sortedY.length - 1].bottomY - 10, bottomY: 20 });
       }
 
       for (let gIdx = 0; gIdx < gaps.length; gIdx++) {
@@ -322,15 +385,16 @@ export class PdfRenderService {
           (pdfTopY - pdfBottomY) * scale
         );
 
-        if (canvasHeight < 35) continue;
+        if (canvasHeight < 30) continue;
 
-        const cropCanvas = document.createElement('canvas');
-        cropCanvas.width = viewport.width;
-        cropCanvas.height = canvasHeight;
-        const cctx = cropCanvas.getContext('2d');
-        if (!cctx) continue;
+        // Extract raw slice
+        const sliceCanvas = document.createElement('canvas');
+        sliceCanvas.width = viewport.width;
+        sliceCanvas.height = canvasHeight;
+        const sctx = sliceCanvas.getContext('2d');
+        if (!sctx) continue;
 
-        cctx.drawImage(
+        sctx.drawImage(
           pageCanvas,
           0,
           canvasTopY,
@@ -342,33 +406,25 @@ export class PdfRenderService {
           canvasHeight
         );
 
-        const imgData = cctx.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
-        let nonWhitePixels = 0;
-        const data = imgData.data;
+        // Auto-trim white borders around the actual drawing/figure
+        const trimmed = autoTrimCanvas(sliceCanvas);
+        if (!trimmed) continue;
 
-        for (let k = 0; k < data.length; k += 16) {
-          const r = data[k];
-          const g = data[k + 1];
-          const b = data[k + 2];
-          if (r < 240 || g < 240 || b < 240) {
-            nonWhitePixels++;
-          }
-        }
+        const dataUrl = trimmed.toDataURL('image/png');
+        const displayW = Math.min(trimmed.width / (scale / 1.5), 520);
+        const displayH = Math.min(trimmed.height / (scale / 1.5), 360);
 
-        if (nonWhitePixels > 80) {
-          const dataUrl = cropCanvas.toDataURL('image/png');
-          diagrams.push({
-            id: `diag-crop-${pageNumber}-${gIdx}-${Date.now()}`,
-            type: 'image',
-            text: '',
-            imageUrl: dataUrl,
-            imageWidth: Math.min(viewport.width / scale, 480),
-            imageHeight: Math.min(canvasHeight / scale, 320),
-            caption: `Figure (Page ${pageNumber})`,
-            pageIndex: pageNumber - 1,
-            orderY: (pdfTopY + pdfBottomY) / 2,
-          });
-        }
+        diagrams.push({
+          id: `diag-crop-${pageNumber}-${gIdx}-${Date.now()}`,
+          type: 'image',
+          text: '',
+          imageUrl: dataUrl,
+          imageWidth: displayW,
+          imageHeight: displayH,
+          caption: `Figure (Page ${pageNumber})`,
+          pageIndex: pageNumber - 1,
+          orderY: (pdfTopY + pdfBottomY) / 2,
+        });
       }
     } catch (err) {
       console.warn('Figure extraction note for page', pageNumber, err);
@@ -384,7 +440,7 @@ export class PdfRenderService {
    * - Full Table Grid Extraction (Multi-column alignment clustering + multi-line row grouping)
    * - Hierarchical Lists & Sub-questions (Numbered 1., 1(a), (a), (i), [1], bullets •, -, *)
    * - Precision Subscripts (<sub>) and Superscripts (<sup>)
-   * - Diagrams, Charts, and Embedded Figures
+   * - Auto-trimmed High-Resolution Diagrams, Charts, and Embedded Figures
    * - Headings (H1, H2, H3) & Paragraphs
    */
   public static async extractDocumentParagraphs(
@@ -408,7 +464,7 @@ export class PdfRenderService {
       const rawItems: RawItem[] = rawTextItems.map((it) => ({
         str: it.str,
         x: it.x,
-        y: 842 - it.y - it.fontSize, // Approximate baseline Y
+        y: 842 - it.y - it.fontSize,
         width: it.width,
         height: it.height,
         fontSize: it.fontSize,
@@ -457,6 +513,7 @@ export class PdfRenderService {
         bottomY: l.y,
       }));
 
+      // Extract high-resolution, auto-trimmed diagrams and figures
       const pageDiagrams = await this.extractPageDiagramsAndFigures(
         pdfDoc,
         p,
@@ -757,7 +814,7 @@ export class PdfRenderService {
    * Generate lightweight JPEG data URL thumbnail for a specific page
    */
   public static async generateThumbnail(
-    pdfDoc: pdfDocProxyType,
+    pdfDoc: pdfjsLib.PDFDocumentProxy,
     pageNumber: number,
     rotation: number = 0,
     targetWidth: number = 200
@@ -817,5 +874,3 @@ export class PdfRenderService {
     return canvas.toDataURL(format, 0.95);
   }
 }
-
-type pdfDocProxyType = pdfjsLib.PDFDocumentProxy;
