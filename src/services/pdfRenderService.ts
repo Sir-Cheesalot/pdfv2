@@ -467,6 +467,29 @@ export class PdfRenderService {
         const sctx = sliceCanvas.getContext('2d');
         if (!sctx) continue;
 
+        // Validate the candidate using the text-masked layer. The exported
+        // crop below still uses the original page so labels that belong to a
+        // genuine diagram remain visible, but text on its own can never turn
+        // into a diagram.
+        const visualSlice = document.createElement('canvas');
+        visualSlice.width = viewport.width;
+        visualSlice.height = bandH;
+        const visualCtx = visualSlice.getContext('2d');
+        if (!visualCtx) continue;
+        visualCtx.drawImage(
+          drawingCanvas,
+          0,
+          band.startY,
+          viewport.width,
+          bandH,
+          0,
+          0,
+          viewport.width,
+          bandH
+        );
+        const maskedGraphic = autoTrimCanvas(visualSlice);
+        if (!maskedGraphic || !isMeaningfulVisual(maskedGraphic)) continue;
+
         sctx.drawImage(
           pageCanvas,
           0,
@@ -483,7 +506,7 @@ export class PdfRenderService {
         if (!trimmed) continue;
 
         // Verify trimmed figure is large enough to be a genuine graphic
-        if (trimmed.width < 24 || trimmed.height < 24 || !isMeaningfulVisual(trimmed)) continue;
+        if (trimmed.width < 24 || trimmed.height < 24) continue;
 
         const dataUrl = trimmed.toDataURL('image/png');
         const displayW = Math.min(trimmed.width / (scale / 1.5), 520);

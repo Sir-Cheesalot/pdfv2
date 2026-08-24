@@ -436,7 +436,8 @@ export function usePdfDocument() {
           pdfBytes,
           pageIndex,
           originalText,
-          newText
+          newText,
+          coords
         );
         PdfRenderService.invalidateCache(docId);
         setPdfBytes(updated);

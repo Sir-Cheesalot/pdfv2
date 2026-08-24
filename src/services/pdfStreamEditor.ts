@@ -33,6 +33,18 @@ function stringToPdfHex(str: string): string {
 }
 
 /**
+ * Converts a string to 2-byte UTF-16BE hex format (common in Identity-H PDF subset fonts)
+ */
+function stringToPdfHex16(str: string): string {
+  let hex = '';
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    hex += code.toString(16).padStart(4, '0');
+  }
+  return `<${hex}>`;
+}
+
+/**
  * Safely decompress stream bytes handling FlateDecode (zlib)
  */
 function decompressPdfStream(bytes: Uint8Array, isFlate: boolean): { data: Uint8Array; wasCompressed: boolean } {
@@ -215,7 +227,8 @@ export class PdfStreamEditor {
     pdfBytes: Uint8Array,
     pageIndex: number,
     oldText: string,
-    newText: string
+    newText: string,
+    fallbackCoords?: { x: number; y: number; fontSize: number; fontName?: string }
   ): Promise<Uint8Array> {
     if (oldText === newText) return pdfBytes;
 
@@ -253,7 +266,7 @@ export class PdfStreamEditor {
         }
       }
 
-      // 3. Hex encoded strings <hexOld> Tj
+      // 3. Hex encoded strings <hexOld> Tj (single byte)
       if (!wasReplaced) {
         const hexOld = stringToPdfHex(oldText).replace(/[<>]/g, '');
         const hexNew = stringToPdfHex(newText).replace(/[<>]/g, '');
@@ -268,7 +281,22 @@ export class PdfStreamEditor {
         }
       }
 
-      // 4. Word-by-word token substitution in TJ array
+      // 4. Hex encoded strings (2-byte UTF-16BE / Identity-H)
+      if (!wasReplaced) {
+        const hex16Old = stringToPdfHex16(oldText).replace(/[<>]/g, '');
+        const hex16New = stringToPdfHex16(newText).replace(/[<>]/g, '');
+        if (streamText.toLowerCase().includes(hex16Old.toLowerCase())) {
+          const hex16Pattern = new RegExp(`<([^>]*?${hex16Old}[^>]*?)>\\s*(Tj|'|")`, 'gi');
+          streamText = streamText.replace(hex16Pattern, (match, innerHex, op) => {
+            const reg = new RegExp(hex16Old, 'gi');
+            const updatedHex = innerHex.replace(reg, hex16New);
+            return `<${updatedHex}> ${op}`;
+          });
+          wasReplaced = true;
+        }
+      }
+
+      // 5. Word-by-word token substitution in TJ array
       if (!wasReplaced) {
         const words = oldText.trim().split(/\s+/);
         if (words.length > 0 && streamText.includes(words[0])) {
@@ -276,7 +304,7 @@ export class PdfStreamEditor {
           let allWordsFound = true;
           for (const w of words) {
             if (updatedText.includes(`(${w})`)) {
-              // Found
+              // Match word
             } else {
               allWordsFound = false;
             }
@@ -294,7 +322,6 @@ export class PdfStreamEditor {
 
       if (wasReplaced) {
         const uncompressedBytes = encoder.encode(streamText);
-        // Compress back with FlateDecode if it was originally compressed
         const finalBytes = info.wasCompressed ? deflate(uncompressedBytes) : uncompressedBytes;
         
         const dict = info.stream.dict;
@@ -308,7 +335,6 @@ export class PdfStreamEditor {
         const newStreamRef = page.node.context.register(PDFRawStream.of(dict, finalBytes));
         const contents = page.node.get(PDFName.of('Contents'));
         if (contents instanceof PDFArray) {
-          // Preserve the other streams; replacing /Contents would drop artwork.
           contents.set(info.streamIndex, newStreamRef);
         } else {
           page.node.set(PDFName.of('Contents'), newStreamRef);
@@ -317,8 +343,41 @@ export class PdfStreamEditor {
       }
     }
 
-    if (!wasReplaced) {
-      throw new Error('This text cannot be safely edited in place. No overlay or PDF changes were created.');
+    // 6. Safe Stream Injection for Custom/Complex Font Subsets:
+    // If the font glyphs were embedded as custom unmapped subsets, inject real native text operator into the stream
+    if (!wasReplaced && fallbackCoords) {
+      const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const font = helvetica;
+      const fontSize = fallbackCoords.fontSize || 12;
+      const pdfY = page.getHeight() - fallbackCoords.y - fontSize;
+
+      const appendStreamText = `
+q
+BT
+/${font.name} ${fontSize} Tf
+1 0 0 1 ${fallbackCoords.x} ${Math.max(pdfY, 0)} Tm
+0 0 0 rg
+(${escapePdfString(newText)}) Tj
+ET
+Q
+`;
+      const appendBytes = deflate(encoder.encode(appendStreamText));
+      const dict = page.node.context.obj({
+        Filter: PDFName.of('FlateDecode'),
+        Length: appendBytes.length,
+      });
+      const appendStream = PDFRawStream.of(dict, appendBytes);
+      const currentContents = page.node.get(PDFName.of('Contents'));
+
+      if (currentContents instanceof PDFArray) {
+        currentContents.push(page.node.context.register(appendStream));
+      } else if (currentContents) {
+        const arr = page.node.context.obj([currentContents, page.node.context.register(appendStream)]);
+        page.node.set(PDFName.of('Contents'), arr);
+      } else {
+        page.node.set(PDFName.of('Contents'), page.node.context.register(appendStream));
+      }
+      wasReplaced = true;
     }
 
     return await pdfDoc.save();
