@@ -248,15 +248,21 @@ const SinglePageView: React.FC<{
     onFocusPage(pageIndex);
     const target = e.target as HTMLElement;
 
-    if (
-      target.closest('.annotation-item') ||
-      target.closest('.text-item-block') ||
-      target.closest('input') ||
-      target.closest('textarea') ||
-      target.closest('button')
-    ) {
-      return;
+    // Only block pointer down on elements if we are in SELECT mode
+    if (activeTool === 'select' || activeTool === 'editOriginal') {
+      if (
+        target.closest('.annotation-item') ||
+        target.closest('input') ||
+        target.closest('textarea') ||
+        target.closest('button')
+      ) {
+        return;
+      }
     }
+
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch (err) {}
 
     const pt = getPdfPoint(e);
     setIsInteracting(true);
@@ -329,7 +335,11 @@ const SinglePageView: React.FC<{
     }
   };
 
-  const handlePointerUp = () => {
+  const handlePointerUp = (e: React.PointerEvent) => {
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch (err) {}
+
     if (draggingAnnotationId) {
       setDraggingAnnotationId(null);
       setDragStart(null);
@@ -407,6 +417,8 @@ const SinglePageView: React.FC<{
     setDragStart(null);
   };
 
+  const isEditingTextOriginalMode = activeTool === 'editOriginal' || activeTool === 'select';
+
   return (
     <div
       className={`relative flex flex-col items-center group transition-transform ${
@@ -429,10 +441,11 @@ const SinglePageView: React.FC<{
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
-        className="relative bg-white shadow-xl rounded-lg overflow-hidden border border-black/10 select-none"
+        className="relative bg-white shadow-xl rounded-lg overflow-hidden border border-black/10 select-none touch-none"
         style={{
           width: `${renderWidth}px`,
           height: `${renderHeight}px`,
+          touchAction: 'none',
           cursor:
             activeTool === 'select'
               ? 'default'
@@ -705,9 +718,12 @@ const SinglePageView: React.FC<{
           return (
             <div
               key={item.id}
-              onMouseEnter={() => setHoveredTextId(item.id)}
+              onMouseEnter={() => {
+                if (isEditingTextOriginalMode) setHoveredTextId(item.id);
+              }}
               onMouseLeave={() => setHoveredTextId(null)}
               onClick={(e) => {
+                if (!isEditingTextOriginalMode) return;
                 e.stopPropagation();
                 setEditingTextItemId(item.id);
                 onSelectContentObject?.({
@@ -725,12 +741,14 @@ const SinglePageView: React.FC<{
                   color: '#000000',
                 });
               }}
-              className={`text-item-block absolute cursor-text select-text transition-all ${
-                isEditing
-                  ? 'ring-2 ring-[#0071e3] bg-white z-30 shadow-md rounded'
+              className={`text-item-block absolute ${
+                !isEditingTextOriginalMode
+                  ? 'pointer-events-none'
+                  : isEditing
+                  ? 'ring-2 ring-[#0071e3] bg-white z-30 shadow-md rounded cursor-text'
                   : isHovered
-                  ? 'ring-1 ring-[#0071e3]/40 bg-[#0071e3]/10 rounded z-10'
-                  : 'z-5 hover:bg-[#0071e3]/5'
+                  ? 'ring-1 ring-[#0071e3]/40 bg-[#0071e3]/10 rounded z-10 cursor-pointer'
+                  : 'z-5 hover:bg-[#0071e3]/5 cursor-pointer'
               }`}
               style={{
                 left: `${item.x * zoom}px`,
@@ -738,7 +756,7 @@ const SinglePageView: React.FC<{
                 minWidth: `${Math.max(item.width * zoom, 24)}px`,
                 minHeight: `${Math.max(item.height * zoom, 16)}px`,
               }}
-              title="Click to edit native PDF text directly"
+              title={isEditingTextOriginalMode ? 'Click to edit native PDF text directly' : undefined}
             >
               {isEditing ? (
                 <input

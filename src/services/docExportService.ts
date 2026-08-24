@@ -20,6 +20,75 @@ import {
 import type { DocParagraph } from '../types/pdf';
 
 /**
+ * Robust sanitizer for pdf-lib standard 14 fonts (WinAnsi encoding)
+ * Translates Greek, math symbols, smart quotes, sub/superscripts to ASCII/WinAnsi safe text
+ */
+export function sanitizeForPdfLib(text: string): string {
+  if (!text) return '';
+  return text
+    // Greek letters (θ, α, β, etc.)
+    .replace(/[θΘ]/g, (m) => (m === 'θ' ? 'theta' : 'Theta'))
+    .replace(/[αΑ]/g, (m) => (m === 'α' ? 'alpha' : 'Alpha'))
+    .replace(/[βΒ]/g, (m) => (m === 'β' ? 'beta' : 'Beta'))
+    .replace(/[γΓ]/g, (m) => (m === 'γ' ? 'gamma' : 'Gamma'))
+    .replace(/[δΔ]/g, (m) => (m === 'δ' ? 'delta' : 'Delta'))
+    .replace(/[εΕ]/g, (m) => (m === 'ε' ? 'epsilon' : 'Epsilon'))
+    .replace(/[ζΖ]/g, (m) => (m === 'ζ' ? 'zeta' : 'Zeta'))
+    .replace(/[ηΗ]/g, (m) => (m === 'η' ? 'eta' : 'Eta'))
+    .replace(/[κΚ]/g, (m) => (m === 'κ' ? 'kappa' : 'Kappa'))
+    .replace(/[λΛ]/g, (m) => (m === 'λ' ? 'lambda' : 'Lambda'))
+    .replace(/[μΜ]/g, (m) => (m === 'μ' ? 'mu' : 'Mu'))
+    .replace(/[νΝ]/g, (m) => (m === 'ν' ? 'nu' : 'Nu'))
+    .replace(/[ξΞ]/g, (m) => (m === 'ξ' ? 'xi' : 'Xi'))
+    .replace(/[πΠ]/g, (m) => (m === 'π' ? 'pi' : 'Pi'))
+    .replace(/[ρΡ]/g, (m) => (m === 'ρ' ? 'rho' : 'Rho'))
+    .replace(/[σΣ]/g, (m) => (m === 'σ' ? 'sigma' : 'Sigma'))
+    .replace(/[τΤ]/g, (m) => (m === 'τ' ? 'tau' : 'Tau'))
+    .replace(/[υΥ]/g, (m) => (m === 'υ' ? 'upsilon' : 'Upsilon'))
+    .replace(/[φΦ]/g, (m) => (m === 'φ' ? 'phi' : 'Phi'))
+    .replace(/[χΧ]/g, (m) => (m === 'χ' ? 'chi' : 'Chi'))
+    .replace(/[ψΨ]/g, (m) => (m === 'ψ' ? 'psi' : 'Psi'))
+    .replace(/[ωΩ]/g, (m) => (m === 'ω' ? 'omega' : 'Omega'))
+    // Math and Symbols
+    .replace(/≤/g, '<=')
+    .replace(/≥/g, '>=')
+    .replace(/≠/g, '!=')
+    .replace(/≈/g, '~=')
+    .replace(/±/g, '+/-')
+    .replace(/×/g, 'x')
+    .replace(/÷/g, '/')
+    .replace(/°/g, ' deg')
+    .replace(/√/g, 'sqrt')
+    .replace(/∞/g, 'inf')
+    .replace(/∑/g, 'sum')
+    .replace(/∫/g, 'int')
+    .replace(/→/g, '->')
+    .replace(/←/g, '<-')
+    .replace(/↔/g, '<->')
+    .replace(/⇒/g, '=>')
+    // Superscripts & Subscripts
+    .replace(/⁰/g, '^0').replace(/¹/g, '^1').replace(/²/g, '^2').replace(/³/g, '^3')
+    .replace(/⁴/g, '^4').replace(/⁵/g, '^5').replace(/⁶/g, '^6').replace(/⁷/g, '^7')
+    .replace(/⁸/g, '^8').replace(/⁹/g, '^9').replace(/⁺/g, '^+').replace(/⁻/g, '^-')
+    .replace(/₀/g, '_0').replace(/₁/g, '_1').replace(/₂/g, '_2').replace(/₃/g, '_3')
+    .replace(/₄/g, '_4').replace(/₅/g, '_5').replace(/₆/g, '_6').replace(/₇/g, '_7')
+    .replace(/₈/g, '_8').replace(/₉/g, '_9')
+    // Punctuation & Quotes
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/[—–]/g, '-')
+    .replace(/…/g, '...')
+    .replace(/[•◦▪■►✔✓]/g, '-')
+    // Strip unprintable control characters
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ')
+    // Replace any remaining non-WinAnsi / high Unicode characters
+    .replace(/[^\x20-\x7E\xA0-\xFF]/g, (char) => {
+      const normalized = char.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      return /^[\x20-\x7E]$/.test(normalized) ? normalized : '?';
+    });
+}
+
+/**
  * Converts a base64 Data URL to a Uint8Array
  */
 function dataUrlToUint8Array(dataUrl: string): Uint8Array {
@@ -387,7 +456,7 @@ export class DocExportService {
 
           if (p.caption) {
             checkPageBreak(16);
-            const capText = p.caption;
+            const capText = sanitizeForPdfLib(p.caption);
             const capW = helveticaItalic.widthOfTextAtSize(capText, 9);
             currentPage.drawText(capText, {
               x: margin + (contentWidth - capW) / 2,
@@ -408,18 +477,29 @@ export class DocExportService {
       if (p.type === 'h1' || p.type === 'h2' || p.type === 'h3') {
         const fontSize = p.type === 'h1' ? 18 : p.type === 'h2' ? 14 : 12;
         const font = helveticaBold;
-        const cleanText = p.text.replace(/<[^>]+>/g, '');
+        const cleanText = sanitizeForPdfLib(p.text.replace(/<[^>]+>/g, ''));
 
         checkPageBreak(fontSize + 18);
         currentY -= p.type === 'h1' ? 16 : 10;
 
-        currentPage.drawText(cleanText, {
-          x: margin,
-          y: currentY,
-          size: fontSize,
-          font,
-          color: rgb(0.1, 0.1, 0.1),
-        });
+        try {
+          currentPage.drawText(cleanText, {
+            x: margin,
+            y: currentY,
+            size: fontSize,
+            font,
+            color: rgb(0.1, 0.1, 0.1),
+          });
+        } catch (err) {
+          const safeAscii = cleanText.replace(/[^\x20-\x7E]/g, '?');
+          currentPage.drawText(safeAscii, {
+            x: margin,
+            y: currentY,
+            size: fontSize,
+            font,
+            color: rgb(0.1, 0.1, 0.1),
+          });
+        }
 
         currentY -= fontSize + 8;
         continue;
@@ -465,7 +545,7 @@ export class DocExportService {
             const cellY = currentY - rowHeight;
             const cellContent = row[cIdx] || '';
             const cellImage = cellImages[`${rIdx}:${cIdx}`];
-            const cellClean = cellContent.replace(/!\[.*?\]\(.*?\)|<[^>]+>/g, '').trim();
+            const cellClean = sanitizeForPdfLib(cellContent.replace(/!\[.*?\]\(.*?\)|<[^>]+>/g, '').trim());
 
             currentPage.drawRectangle({
               x: cellX,
@@ -501,13 +581,24 @@ export class DocExportService {
             if (cellClean) {
               const font = isHeader ? helveticaBold : helvetica;
               const textFit = cellClean.length > 25 ? cellClean.substring(0, 22) + '...' : cellClean;
-              currentPage.drawText(textFit, {
-                x: cellX + 4,
-                y: cellY + 6,
-                size: 9.5,
-                font,
-                color: rgb(0.15, 0.15, 0.15),
-              });
+              try {
+                currentPage.drawText(textFit, {
+                  x: cellX + 4,
+                  y: cellY + 6,
+                  size: 9.5,
+                  font,
+                  color: rgb(0.15, 0.15, 0.15),
+                });
+              } catch (err) {
+                const safeAscii = textFit.replace(/[^\x20-\x7E]/g, '?');
+                currentPage.drawText(safeAscii, {
+                  x: cellX + 4,
+                  y: cellY + 6,
+                  size: 9.5,
+                  font,
+                  color: rgb(0.15, 0.15, 0.15),
+                });
+              }
             }
           }
 
@@ -523,8 +614,8 @@ export class DocExportService {
       const isNumbered = p.type === 'numbered';
       const fontSize = 10;
       const font = helvetica;
-      const rawClean = p.text.replace(/<[^>]+>/g, '');
-      const prefix = isBullet ? '• ' : '';
+      const rawClean = sanitizeForPdfLib(p.text.replace(/<[^>]+>/g, ''));
+      const prefix = isBullet ? '- ' : '';
       const textToWrap = prefix + rawClean;
 
       // Word wrapping
@@ -534,7 +625,13 @@ export class DocExportService {
 
       for (const w of words) {
         const testLine = line ? `${line} ${w}` : w;
-        const testW = font.widthOfTextAtSize(testLine, fontSize);
+        let testW = 0;
+        try {
+          testW = font.widthOfTextAtSize(testLine, fontSize);
+        } catch (e) {
+          testW = testLine.length * (fontSize * 0.55);
+        }
+
         if (testW > contentWidth && line) {
           lines.push(line);
           line = w;
@@ -547,13 +644,24 @@ export class DocExportService {
       checkPageBreak(lines.length * 14 + 10);
 
       for (const l of lines) {
-        currentPage.drawText(l, {
-          x: margin + (isBullet || isNumbered ? 12 : 0),
-          y: currentY,
-          size: fontSize,
-          font,
-          color: rgb(0.2, 0.2, 0.2),
-        });
+        try {
+          currentPage.drawText(l, {
+            x: margin + (isBullet || isNumbered ? 12 : 0),
+            y: currentY,
+            size: fontSize,
+            font,
+            color: rgb(0.2, 0.2, 0.2),
+          });
+        } catch (err) {
+          const safeAscii = l.replace(/[^\x20-\x7E]/g, '?');
+          currentPage.drawText(safeAscii, {
+            x: margin + (isBullet || isNumbered ? 12 : 0),
+            y: currentY,
+            size: fontSize,
+            font,
+            color: rgb(0.2, 0.2, 0.2),
+          });
+        }
         currentY -= 14;
       }
 

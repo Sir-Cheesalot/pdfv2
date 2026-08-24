@@ -15,6 +15,7 @@ import type {
   PdfMetadata,
   WatermarkConfig,
 } from '../types/pdf';
+import { sanitizeForPdfLib } from './docExportService';
 
 // Helper to convert hex color to RGB (0-1)
 export function hexToRgb(hex: string): { r: number; g: number; b: number } {
@@ -253,14 +254,27 @@ export class PdfService {
             });
           }
 
-          targetPage.drawText(ann.text || '', {
-            x: ann.x + 2,
-            y: pdfY + 2,
-            size: ann.fontSize || 14,
-            font,
-            color: rgb(r, g, b),
-            opacity: annOpacity,
-          });
+          const cleanAnnText = sanitizeForPdfLib(ann.text || '');
+          try {
+            targetPage.drawText(cleanAnnText, {
+              x: ann.x + 2,
+              y: pdfY + 2,
+              size: ann.fontSize || 14,
+              font,
+              color: rgb(r, g, b),
+              opacity: annOpacity,
+            });
+          } catch (err) {
+            const asciiOnly = cleanAnnText.replace(/[^\x20-\x7E]/g, '?');
+            targetPage.drawText(asciiOnly, {
+              x: ann.x + 2,
+              y: pdfY + 2,
+              size: ann.fontSize || 14,
+              font: helveticaFont,
+              color: rgb(r, g, b),
+              opacity: annOpacity,
+            });
+          }
         } else if (ann.type === 'rectangle' || ann.type === 'redact') {
           const isRedact = ann.type === 'redact';
           const { r, g, b } = hexToRgb(
