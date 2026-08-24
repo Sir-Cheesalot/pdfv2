@@ -10,9 +10,8 @@ import type {
   ImageAnnotation,
   WatermarkConfig,
   RebuiltPage,
-  RebuiltTextElement,
+  ExtractedTextItem,
 } from '../../types/pdf';
-import { PdfRebuildService } from '../../services/pdfRebuildService';
 import { PdfRenderService } from '../../services/pdfRenderService';
 import * as pdfjsLib from 'pdfjs-dist';
 
@@ -39,10 +38,11 @@ interface CanvasEditorProps {
   onDeleteAnnotation: (id: string) => void;
 }
 
-// Sub-component for rendering a single parsed and rebuilt editable page
+// Sub-component for rendering a single page in the multi-page scroll view
 const SinglePageView: React.FC<{
   docId: string;
   pdfBytes: Uint8Array | null;
+  pdfProxy: pdfjsLib.PDFDocumentProxy | null;
   page: PageInfo;
   pageIndex: number;
   isActive: boolean;
@@ -56,8 +56,6 @@ const SinglePageView: React.FC<{
   pageAnnotations: Annotation[];
   watermark: WatermarkConfig | null;
   selectedAnnotationId: string | null;
-  rebuiltPage?: RebuiltPage;
-  onUpdateRebuiltText?: (pageIndex: number, elemId: string, newText: string) => void;
   onFocusPage: (index: number) => void;
   onSelectAnnotation: (id: string | null) => void;
   onUpdateAnnotations: (newAnns: Annotation[]) => void;
@@ -65,6 +63,7 @@ const SinglePageView: React.FC<{
 }> = ({
   docId,
   pdfBytes,
+  pdfProxy,
   page,
   pageIndex,
   isActive,
@@ -78,43 +77,19 @@ const SinglePageView: React.FC<{
   pageAnnotations,
   watermark,
   selectedAnnotationId,
-  rebuiltPage,
-  onUpdateRebuiltText,
   onFocusPage,
   onSelectAnnotation,
   onUpdateAnnotations,
   onDeleteAnnotation,
 }) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Local state for rebuilt page elements (if not passed from parent)
-  const [localRebuiltPage, setLocalRebuiltPage] = useState<RebuiltPage | null>(rebuiltPage || null);
-  const [editingElemId, setEditingElemId] = useState<string | null>(null);
-  const [hoveredElemId, setHoveredElemId] = useState<string | null>(null);
+  const [extractedTextItems, setExtractedTextItems] = useState<ExtractedTextItem[]>([]);
+  const [editingTextItemId, setEditingTextItemId] = useState<string | null>(null);
+  const [hoveredTextId, setHoveredTextId] = useState<string | null>(null);
 
-  // Parse page structure if not already available
-  useEffect(() => {
-    if (rebuiltPage) {
-      setLocalRebuiltPage(rebuiltPage);
-      return;
-    }
-    if (!pdfBytes) return;
-
-    let isCancelled = false;
-    PdfRebuildService.parsePdfToRebuiltPages(pdfBytes)
-      .then((parsedPages) => {
-        if (!isCancelled && parsedPages[pageIndex]) {
-          setLocalRebuiltPage(parsedPages[pageIndex]);
-        }
-      })
-      .catch((e) => console.warn('Error parsing rebuilt page:', e));
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [pdfBytes, pageIndex, rebuiltPage]);
-
-  // Interaction states for drawing / annotations
+  // Interaction states for drawing & annotating
   const [isInteracting, setIsInteracting] = useState(false);
   const [dragStart, setDragStart] = useState<Point | null>(null);
   const [currentDrawPoints, setCurrentDrawPoints] = useState<Point[]>([]);
@@ -136,10 +111,87 @@ const SinglePageView: React.FC<{
 
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
 
-  const pageWidth = localRebuiltPage?.width || page.width || 595.28;
-  const pageHeight = localRebuiltPage?.height || page.height || 841.89;
-  const renderWidth = Math.round(pageWidth * zoom);
-  const renderHeight = Math.round(pageHeight * zoom);
+  const renderWidth = Math.round(page.width * zoom);
+  const renderHeight = Math.round(page.height * zoom);
+
+  // Render page to canvas immediately (never blank)
+  useEffect(() => {
+    if (!canvasRef.current) return;
+    let isCancelled = false;
+
+    const render = async () => {
+      if (page.isBlank) {
+        const c = canvasRef.current;
+        if (!c) return;
+        c.width = renderWidth;
+        c.height = renderHeight;
+        c.style.width = `${renderWidth}px`;
+        c.style.height = `${renderHeight}px`;
+        const ctx = c.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, renderWidth, renderHeight);
+        }
+        return;
+      }
+
+      if (page.customBytes) {
+        try {
+          const extDoc = await pdfjsLib.getDocument({ data: new Uint8Array(page.customBytes) }).promise;
+          if (!isCancelled && canvasRef.current) {
+            await PdfRenderService.renderPageToCanvas(
+              extDoc,
+              page.originalPageIndex + 1,
+              canvasRef.current,
+              zoom,
+              page.rotation
+            );
+          }
+        } catch (e) {
+          console.error('Error rendering custom page in canvas:', e);
+        }
+        return;
+      }
+
+      if (pdfProxy && canvasRef.current) {
+        try {
+          await PdfRenderService.renderPageToCanvas(
+            pdfProxy,
+            page.originalPageIndex + 1,
+            canvasRef.current,
+            zoom,
+            page.rotation
+          );
+        } catch (e) {
+          console.error('Error rendering page in canvas:', e);
+        }
+      }
+    };
+
+    render();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [pdfProxy, page, zoom, renderWidth, renderHeight]);
+
+  // Extract page text items for live in-place direct editing
+  useEffect(() => {
+    if (!pdfProxy || page.isBlank || page.customBytes) return;
+    let isCancelled = false;
+
+    PdfRenderService.extractPageTextItems(pdfProxy, page.originalPageIndex + 1)
+      .then((items) => {
+        if (!isCancelled) {
+          setExtractedTextItems(items);
+        }
+      })
+      .catch((err) => console.warn('Text items note for page', pageIndex, err));
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [pdfProxy, page, pageIndex]);
 
   const getPdfPoint = useCallback(
     (e: React.PointerEvent): Point => {
@@ -155,28 +207,50 @@ const SinglePageView: React.FC<{
     [zoom]
   );
 
-  // Live text edit handler (Directly edits the parsed element — zero coverup!)
-  const handleTextChange = (elemId: string, newText: string) => {
-    if (onUpdateRebuiltText) {
-      onUpdateRebuiltText(pageIndex, elemId, newText);
+  // In-place text save handler
+  const handleSaveTextItemEdit = (item: ExtractedTextItem, newText: string) => {
+    if (!newText || newText === item.str) {
+      setEditingTextItemId(null);
+      return;
     }
-    setLocalRebuiltPage((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        textElements: prev.textElements.map((t) => (t.id === elemId ? { ...t, text: newText } : t)),
-      };
-    });
+
+    item.str = newText;
+    setExtractedTextItems((prev) =>
+      prev.map((it) => (it.id === item.id ? { ...it, str: newText } : it))
+    );
+
+    const textAnnotation: TextAnnotation = {
+      id: `text-${item.id}-${Date.now()}`,
+      pageIndex,
+      type: 'text',
+      x: item.x,
+      y: item.y,
+      width: Math.max(item.width + 8, 30),
+      height: Math.max(item.height + 4, 18),
+      text: newText,
+      fontSize: item.fontSize,
+      fontFamily: (item.fontName?.includes('Times')
+        ? 'TimesRoman'
+        : item.fontName?.includes('Courier')
+        ? 'Courier'
+        : 'Helvetica') as any,
+      color: '#1d1d1f',
+      backgroundColor: '#ffffff',
+      opacity: 1,
+    };
+
+    onUpdateAnnotations([...pageAnnotations, textAnnotation]);
+    setEditingTextItemId(null);
   };
 
-  // Pointer event handlers for drawing and annotations
+  // Pointer events for drawing & annotating
   const handlePointerDown = (e: React.PointerEvent) => {
     onFocusPage(pageIndex);
     const target = e.target as HTMLElement;
 
     if (
-      target.closest('.rebuilt-text-block') ||
       target.closest('.annotation-item') ||
+      target.closest('.text-item-block') ||
       target.closest('input') ||
       target.closest('textarea') ||
       target.closest('button')
@@ -350,17 +424,17 @@ const SinglePageView: React.FC<{
       <div className="w-full flex items-center justify-between px-2 py-1 text-[11px] font-medium text-slate-500">
         <span>Page {pageIndex + 1}</span>
         <span className="text-[10px] text-slate-400">
-          {Math.round(pageWidth)} × {Math.round(pageHeight)} pt
+          {Math.round(page.width)} × {Math.round(page.height)} pt
         </span>
       </div>
 
-      {/* REBUILT PURE EDITABLE PAGE SHEET (ZERO BACKGROUND COVERUP) */}
+      {/* Main Page Viewport Container */}
       <div
         ref={containerRef}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
-        className="relative bg-white shadow-xl rounded-lg overflow-hidden border border-black/10 select-text"
+        className="relative bg-white shadow-xl rounded-lg overflow-hidden border border-black/10 select-none"
         style={{
           width: `${renderWidth}px`,
           height: `${renderHeight}px`,
@@ -374,130 +448,70 @@ const SinglePageView: React.FC<{
               : 'default',
         }}
       >
-        {/* 1. EXTRACTED IMAGES & FIGURES LAYER */}
-        {localRebuiltPage?.imageElements.map((img) => (
-          <div
-            key={img.id}
-            className="absolute select-none pointer-events-none"
-            style={{
-              left: `${img.x * zoom}px`,
-              top: `${img.y * zoom}px`,
-              width: `${img.width * zoom}px`,
-              height: `${img.height * zoom}px`,
-            }}
-          >
-            <img
-              src={img.dataUrl}
-              alt={img.caption || 'Figure'}
-              className="w-full h-full object-contain"
-            />
-          </div>
-        ))}
+        {/* BASE CANVAS LAYER (Renders PDF pages crisp & immediately) */}
+        <canvas
+          ref={canvasRef}
+          className="absolute top-0 left-0 pointer-events-none block z-0"
+          style={{ width: `${renderWidth}px`, height: `${renderHeight}px` }}
+        />
 
-        {/* 2. EXTRACTED VECTOR SHAPES LAYER */}
-        {localRebuiltPage?.vectorElements.map((vec) => (
-          <div
-            key={vec.id}
-            className="absolute pointer-events-none"
-            style={{
-              left: `${vec.x * zoom}px`,
-              top: `${vec.y * zoom}px`,
-              width: `${vec.width * zoom}px`,
-              height: `${vec.height * zoom}px`,
-              border: vec.strokeColor
-                ? `${(vec.strokeWidth || 1) * zoom}px solid ${vec.strokeColor}`
-                : undefined,
-              backgroundColor: vec.fillColor,
-            }}
-          />
-        ))}
-
-        {/* 3. PARSED REAL DIRECTLY-EDITABLE TEXT ELEMENTS (NO COVERUPS) */}
-        {localRebuiltPage?.textElements.map((elem) => {
-          const isEditing = editingElemId === elem.id;
-          const isHovered = hoveredElemId === elem.id;
-          const fontSizePx = Math.max(elem.fontSize * zoom, 8);
+        {/* INTERACTIVE TEXT OVERLAY (Click any text on the page to edit directly) */}
+        {extractedTextItems.map((item) => {
+          const isEditing = editingTextItemId === item.id;
+          const isHovered = hoveredTextId === item.id;
+          const fontSizePx = Math.max(item.fontSize * zoom, 9);
 
           return (
             <div
-              key={elem.id}
-              onMouseEnter={() => setHoveredElemId(elem.id)}
-              onMouseLeave={() => setHoveredElemId(null)}
+              key={item.id}
+              onMouseEnter={() => setHoveredTextId(item.id)}
+              onMouseLeave={() => setHoveredTextId(null)}
               onClick={(e) => {
                 e.stopPropagation();
-                setEditingElemId(elem.id);
+                setEditingTextItemId(item.id);
               }}
-              className={`rebuilt-text-block absolute cursor-text select-text transition-all ${
+              className={`text-item-block absolute cursor-text select-text transition-all ${
                 isEditing
                   ? 'ring-2 ring-[#0071e3] bg-white z-30 shadow-md rounded'
                   : isHovered
-                  ? 'ring-1 ring-[#0071e3]/40 bg-[#0071e3]/5 rounded z-10'
-                  : 'z-10'
+                  ? 'ring-1 ring-[#0071e3]/40 bg-[#0071e3]/10 rounded z-10'
+                  : 'z-5 hover:bg-[#0071e3]/5'
               }`}
               style={{
-                left: `${elem.x * zoom}px`,
-                top: `${elem.y * zoom}px`,
-                minWidth: `${elem.width * zoom}px`,
-                minHeight: `${elem.height * zoom}px`,
-                lineHeight: '1.2',
+                left: `${item.x * zoom}px`,
+                top: `${item.y * zoom}px`,
+                minWidth: `${Math.max(item.width * zoom, 24)}px`,
+                minHeight: `${Math.max(item.height * zoom, 16)}px`,
               }}
+              title="Click to edit text directly"
             >
               {isEditing ? (
-                <textarea
+                <input
                   autoFocus
-                  defaultValue={elem.text}
+                  type="text"
+                  defaultValue={item.str}
                   onPointerDown={(e) => e.stopPropagation()}
-                  onBlur={(e) => {
-                    handleTextChange(elem.id, e.target.value);
-                    setEditingElemId(null);
-                  }}
+                  onBlur={(e) => handleSaveTextItemEdit(item, e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
+                    if (e.key === 'Enter') {
                       e.preventDefault();
-                      handleTextChange(elem.id, (e.target as HTMLTextAreaElement).value);
-                      setEditingElemId(null);
+                      handleSaveTextItemEdit(item, (e.target as HTMLInputElement).value);
                     }
                   }}
-                  className="w-full bg-transparent border-0 outline-none p-0.5 resize-none overflow-hidden text-slate-900"
+                  className="w-full h-full bg-white text-slate-900 border-0 outline-none px-1 py-0.5 rounded text-xs shadow-xs"
                   style={{
                     fontSize: `${fontSizePx}px`,
-                    fontFamily:
-                      elem.fontFamily === 'Times'
-                        ? 'Times New Roman, serif'
-                        : elem.fontFamily === 'Courier'
-                        ? 'Courier New, monospace'
-                        : 'Helvetica, Arial, sans-serif',
-                    color: elem.color || '#1d1d1f',
-                    fontWeight: elem.bold ? 'bold' : 'normal',
-                    fontStyle: elem.italic ? 'italic' : 'normal',
+                    fontFamily: item.fontName || 'Helvetica',
                   }}
                 />
-              ) : (
-                <div
-                  className="w-full h-full p-0.5 select-text whitespace-pre-wrap"
-                  style={{
-                    fontSize: `${fontSizePx}px`,
-                    fontFamily:
-                      elem.fontFamily === 'Times'
-                        ? 'Times New Roman, serif'
-                        : elem.fontFamily === 'Courier'
-                        ? 'Courier New, monospace'
-                        : 'Helvetica, Arial, sans-serif',
-                    color: elem.color || '#1d1d1f',
-                    fontWeight: elem.bold ? 'bold' : 'normal',
-                    fontStyle: elem.italic ? 'italic' : 'normal',
-                  }}
-                >
-                  {elem.text}
-                </div>
-              )}
+              ) : null}
             </div>
           );
         })}
 
-        {/* 4. WATERMARK LAYER */}
+        {/* WATERMARK LAYER */}
         {watermark && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none z-20">
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none z-15">
             <span
               style={{
                 fontSize: `${watermark.fontSize * zoom}px`,
@@ -513,7 +527,7 @@ const SinglePageView: React.FC<{
           </div>
         )}
 
-        {/* 5. USER ANNOTATIONS LAYER */}
+        {/* USER ANNOTATIONS LAYER */}
         {pageAnnotations.map((ann) => {
           const isSelected = selectedAnnotationId === ann.id;
 
@@ -539,13 +553,14 @@ const SinglePageView: React.FC<{
                   setEditingTextId(ann.id);
                 }}
                 className={`annotation-item absolute cursor-text select-text transition-all ${
-                  isSelected ? 'ring-2 ring-[#0071e3] rounded shadow-md z-40' : 'z-30'
+                  isSelected ? 'ring-2 ring-[#0071e3] rounded shadow-md z-40' : 'z-20'
                 }`}
                 style={{
                   left: `${tAnn.x * zoom}px`,
                   top: `${tAnn.y * zoom}px`,
                   width: `${tAnn.width * zoom}px`,
                   height: `${tAnn.height * zoom}px`,
+                  backgroundColor: tAnn.backgroundColor || 'transparent',
                 }}
               >
                 {isEditing ? (
@@ -560,7 +575,7 @@ const SinglePageView: React.FC<{
                       );
                       setEditingTextId(null);
                     }}
-                    className="w-full h-full bg-white/95 text-slate-900 border border-[#0071e3] rounded outline-none p-1 resize-none shadow-xs"
+                    className="w-full h-full bg-white text-slate-900 border border-[#0071e3] rounded outline-none p-1 resize-none shadow-xs"
                     style={{
                       fontSize: `${tAnn.fontSize * zoom}px`,
                       fontFamily: tAnn.fontFamily || 'Helvetica',
@@ -571,7 +586,7 @@ const SinglePageView: React.FC<{
                   />
                 ) : (
                   <div
-                    className="w-full h-full p-1 whitespace-pre-wrap select-text"
+                    className="w-full h-full p-0.5 whitespace-pre-wrap select-text"
                     style={{
                       fontSize: `${tAnn.fontSize * zoom}px`,
                       fontFamily: tAnn.fontFamily || 'Helvetica',
@@ -601,7 +616,7 @@ const SinglePageView: React.FC<{
                   setDragOffset({ x: pt.x - imgAnn.x, y: pt.y - imgAnn.y });
                 }}
                 className={`annotation-item absolute cursor-move transition-all ${
-                  isSelected ? 'ring-2 ring-[#0071e3] shadow-md z-40' : 'z-30'
+                  isSelected ? 'ring-2 ring-[#0071e3] shadow-md z-40' : 'z-20'
                 }`}
                 style={{
                   left: `${imgAnn.x * zoom}px`,
@@ -642,13 +657,29 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
   annotations,
   watermark,
   selectedAnnotationId,
-  rebuiltPages,
-  onUpdateRebuiltText,
   onSelectPage,
   onSelectAnnotation,
   onUpdateAnnotations,
   onDeleteAnnotation,
 }) => {
+  const [pdfProxy, setPdfProxy] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
+
+  // Load PDF proxy
+  useEffect(() => {
+    if (!pdfBytes) return;
+    let isCancelled = false;
+
+    PdfRenderService.loadDocument(docId, pdfBytes)
+      .then((proxy) => {
+        if (!isCancelled) setPdfProxy(proxy);
+      })
+      .catch((err) => console.error('Error loading PDF in CanvasEditor:', err));
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [docId, pdfBytes]);
+
   // Keyboard shortcut listener (Delete key)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -675,6 +706,7 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
           key={page.id}
           docId={docId}
           pdfBytes={pdfBytes}
+          pdfProxy={pdfProxy}
           page={page}
           pageIndex={idx}
           isActive={idx === activePageIndex}
@@ -688,8 +720,6 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
           pageAnnotations={annotations[idx] || []}
           watermark={watermark}
           selectedAnnotationId={selectedAnnotationId}
-          rebuiltPage={rebuiltPages?.[idx]}
-          onUpdateRebuiltText={onUpdateRebuiltText}
           onFocusPage={onSelectPage}
           onSelectAnnotation={onSelectAnnotation}
           onUpdateAnnotations={(newAnns) => onUpdateAnnotations(idx, newAnns)}

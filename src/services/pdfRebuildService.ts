@@ -245,13 +245,15 @@ export class PdfRebuildService {
         }
       }
 
-      // 3. Extract Auto-Trimmed High-Resolution Figures & Diagrams
+      // 3. Extract Auto-Trimmed High-Resolution Figures & Diagrams (text masked out)
       try {
-        const textBounds = textElements.map((t) => ({
-          topY: viewport.height - t.y,
-          bottomY: viewport.height - t.y - t.height,
+        const textItemsCoords = textElements.map((t) => ({
+          x: t.x,
+          y: t.y,
+          width: t.width,
+          height: t.height,
         }));
-        const diagrams = await PdfRenderService.extractPageDiagramsAndFigures(pdfDoc, p, textBounds);
+        const diagrams = await PdfRenderService.extractPageDiagramsAndFigures(pdfDoc, p, textItemsCoords);
         diagrams.forEach((d, dIdx) => {
           if (d.imageUrl) {
             const diagW = Math.min(d.imageWidth || 400, viewport.width - 60);
