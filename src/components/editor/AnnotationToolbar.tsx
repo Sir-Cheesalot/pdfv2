@@ -12,7 +12,6 @@ import {
   Stamp as StampIcon,
   ShieldAlert,
   Image as ImageIcon,
-  Sparkles,
   Replace,
 } from 'lucide-react';
 import type { ToolType } from '../../types/pdf';
@@ -65,22 +64,6 @@ export const AnnotationToolbar: React.FC<AnnotationToolbarProps> = ({
 
   return (
     <div className="bg-white/90 backdrop-blur-2xl border border-black/10 rounded-2xl shadow-xl p-1.5 flex items-center space-x-1 select-none z-30">
-      {/* Edit Original Words Toggle */}
-      <button
-        onClick={() => onSelectTool(activeTool === 'editOriginal' ? 'select' : 'editOriginal')}
-        className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
-          activeTool === 'editOriginal'
-            ? 'bg-[#0071e3] text-white shadow-sm'
-            : 'bg-[#0071e3]/10 text-[#0071e3] hover:bg-[#0071e3]/15'
-        }`}
-        title="Click and edit words directly in the PDF"
-      >
-        <Sparkles className="w-3.5 h-3.5" />
-        <span>Edit Text</span>
-      </button>
-
-      <div className="w-[1px] h-4 bg-black/10 mx-1" />
-
       {/* Basic Tools */}
       {tools.map((t) => {
         const isActive = activeTool === t.id;
