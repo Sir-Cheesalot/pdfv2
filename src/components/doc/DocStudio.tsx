@@ -442,6 +442,24 @@ export const DocStudio: React.FC<DocStudioProps> = ({
     }
   };
 
+  // The source PDF already contains the exact page geometry, fonts, vectors,
+  // tables, and diagrams. Downloading these bytes is the only lossless path;
+  // the editable document exporter intentionally reflows content after edits.
+  const handleDownloadExactPdf = () => {
+    if (!pdfBytes) return;
+    const baseName = fileName.replace(/\.pdf$/i, '');
+    const exactBytes = new Uint8Array(pdfBytes);
+    const blob = new Blob([exactBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${baseName}_exact.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const handleExportHtml = () => {
     const baseName = fileName.replace(/\.pdf$/i, '');
     const html = DocExportService.exportToHtml(paragraphs, baseName);
@@ -602,10 +620,19 @@ export const DocStudio: React.FC<DocStudioProps> = ({
             onClick={handleExportCleanPdf}
             disabled={isExporting}
             className="flex items-center space-x-1.5 px-3.5 py-1.5 bg-black/5 hover:bg-black/10 text-slate-800 text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
-            title="Export clean vector PDF generated directly from document"
+            title="Export the editable document as a regenerated PDF"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Export PDF</span>
+            <span>Editable PDF</span>
+          </button>
+
+          <button
+            onClick={handleDownloadExactPdf}
+            className="hidden lg:flex items-center space-x-1.5 px-3.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-medium rounded-lg transition-colors"
+            title="Download the original PDF with its exact page layout, tables, and diagrams"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Exact PDF</span>
           </button>
 
           <button

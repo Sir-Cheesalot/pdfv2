@@ -319,8 +319,8 @@ export class PdfRenderService {
 
   /**
    * High-Precision Diagram & Figure Extraction:
-   * Masks out all known text bounding boxes with pure white so only genuine graphics,
-   * charts, circuits, apparatus, and photos are extracted — eliminating 100% of text duplication.
+   * Uses masked text only to detect genuine graphics. The final crop comes from
+   * the original page, retaining labels that belong inside a diagram.
    */
   public static async extractPageDiagramsAndFigures(
     pdfDoc: pdfjsLib.PDFDocumentProxy,
@@ -452,6 +452,8 @@ export class PdfRenderService {
           caption: `Figure (Page ${pageNumber})`,
           pageIndex: pageNumber - 1,
           orderY: viewport.height / scale - (band.startY + band.endY) / (2 * scale),
+          layoutTopY: viewport.height / scale - band.startY / scale,
+          layoutBottomY: viewport.height / scale - band.endY / scale,
         });
       }
     } catch (err) {
@@ -508,7 +510,7 @@ export class PdfRenderService {
         maxX: number;
       }
 
-      const lines: LineGroup[] = [];
+      let lines: LineGroup[] = [];
 
       rawItems.sort((a, b) => {
         if (Math.abs(a.y - b.y) > 3.8) {
@@ -547,6 +549,32 @@ export class PdfRenderService {
         p,
         rawTextItems
       );
+
+      // Keep text labels inside a retained diagram with that diagram. They
+      // should not be emitted again as editable paragraphs above or below it.
+      // Text outside the visual's bounds continues through the normal flow.
+      if (pageDiagrams.length > 0) {
+        lines = lines
+          .map((line) => {
+            const visibleItems = line.items.filter((item) => {
+              const itemCenterY = item.y + item.height / 2;
+              return !pageDiagrams.some(
+                (diagram) =>
+                  diagram.layoutTopY !== undefined &&
+                  diagram.layoutBottomY !== undefined &&
+                  itemCenterY <= diagram.layoutTopY + 3 &&
+                  itemCenterY >= diagram.layoutBottomY - 3
+              );
+            });
+            return {
+              ...line,
+              items: visibleItems,
+              minX: visibleItems.length ? Math.min(...visibleItems.map((item) => item.x)) : line.minX,
+              maxX: visibleItems.length ? Math.max(...visibleItems.map((item) => item.x + item.width)) : line.maxX,
+            };
+          })
+          .filter((line) => line.items.length > 0);
+      }
 
       if (rawItems.length === 0) {
         if (pageDiagrams.length > 0) {

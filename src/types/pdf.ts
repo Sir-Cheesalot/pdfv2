@@ -227,6 +227,7 @@ export interface DocParagraph {
   caption?: string;
   pageIndex: number;
   orderY?: number; // Visual vertical coordinate for natural ordering
+  layoutTopY?: number;
   layoutBottomY?: number;
 }
 
