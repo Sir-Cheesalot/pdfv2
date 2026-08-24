@@ -143,6 +143,7 @@ export interface ImageAnnotation extends AnnotationBase {
 export interface RedactAnnotation extends AnnotationBase {
   type: 'redact';
   color: string; // '#000000' or '#ffffff'
+  overlayText?: string;
 }
 
 export type Annotation =

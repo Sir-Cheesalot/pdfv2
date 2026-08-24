@@ -8,6 +8,7 @@ import type {
   DrawAnnotation,
   ShapeAnnotation,
   ImageAnnotation,
+  RedactAnnotation,
   WatermarkConfig,
   RebuiltPage,
   ExtractedTextItem,
@@ -119,13 +120,6 @@ const SinglePageView: React.FC<{
   } | null>(null);
   const [draggingAnnotationId, setDraggingAnnotationId] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<Point>({ x: 0, y: 0 });
-  const [resizingHandle, setResizingHandle] = useState<'se' | 'sw' | 'ne' | 'nw' | null>(null);
-  const [initialResizeBox, setInitialResizeBox] = useState<{
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  } | null>(null);
 
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
 
@@ -274,7 +268,8 @@ const SinglePageView: React.FC<{
       activeTool === 'rectangle' ||
       activeTool === 'circle' ||
       activeTool === 'line' ||
-      activeTool === 'arrow'
+      activeTool === 'arrow' ||
+      activeTool === 'redact'
     ) {
       setPreviewShape({ x: pt.x, y: pt.y, width: 0, height: 0 });
     } else if (activeTool === 'text') {
@@ -307,36 +302,12 @@ const SinglePageView: React.FC<{
     const pt = getPdfPoint(e);
 
     if (draggingAnnotationId) {
-      const targetAnn = pageAnnotations.find((a) => a.id === draggingAnnotationId);
-      if (!targetAnn) return;
-
-      if (resizingHandle && initialResizeBox && dragStart) {
-        const dx = pt.x - dragStart.x;
-        const dy = pt.y - dragStart.y;
-        let newX = initialResizeBox.x;
-        let newY = initialResizeBox.y;
-        let newW = initialResizeBox.width;
-        let newH = initialResizeBox.height;
-
-        if (resizingHandle === 'se') {
-          newW = Math.max(20, initialResizeBox.width + dx);
-          newH = Math.max(16, initialResizeBox.height + dy);
-        }
-
-        const updated = pageAnnotations.map((a) =>
-          a.id === draggingAnnotationId
-            ? ({ ...a, x: newX, y: newY, width: newW, height: newH } as Annotation)
-            : a
-        );
-        onUpdateAnnotations(updated);
-      } else {
-        const newX = Math.max(0, pt.x - dragOffset.x);
-        const newY = Math.max(0, pt.y - dragOffset.y);
-        const updated = pageAnnotations.map((a) =>
-          a.id === draggingAnnotationId ? ({ ...a, x: newX, y: newY } as Annotation) : a
-        );
-        onUpdateAnnotations(updated);
-      }
+      const newX = Math.max(0, pt.x - dragOffset.x);
+      const newY = Math.max(0, pt.y - dragOffset.y);
+      const updated = pageAnnotations.map((a) =>
+        a.id === draggingAnnotationId ? ({ ...a, x: newX, y: newY } as Annotation) : a
+      );
+      onUpdateAnnotations(updated);
       return;
     }
 
@@ -346,7 +317,8 @@ const SinglePageView: React.FC<{
       (activeTool === 'rectangle' ||
         activeTool === 'circle' ||
         activeTool === 'line' ||
-        activeTool === 'arrow') &&
+        activeTool === 'arrow' ||
+        activeTool === 'redact') &&
       dragStart
     ) {
       const minX = Math.min(dragStart.x, pt.x);
@@ -360,8 +332,6 @@ const SinglePageView: React.FC<{
   const handlePointerUp = () => {
     if (draggingAnnotationId) {
       setDraggingAnnotationId(null);
-      setResizingHandle(null);
-      setInitialResizeBox(null);
       setDragStart(null);
     }
 
@@ -385,7 +355,7 @@ const SinglePageView: React.FC<{
         width: Math.max(maxX - minX, 10),
         height: Math.max(maxY - minY, 10),
         points: currentDrawPoints,
-        strokeColor: activeTool === 'highlight' ? currentColor : currentColor,
+        strokeColor: currentColor,
         strokeWidth: activeTool === 'highlight' ? currentStrokeWidth * 3 : currentStrokeWidth,
         isHighlighter: activeTool === 'highlight',
         opacity: activeTool === 'highlight' ? 0.35 : currentOpacity,
@@ -398,7 +368,7 @@ const SinglePageView: React.FC<{
         activeTool === 'line' ||
         activeTool === 'arrow') &&
       previewShape &&
-      (previewShape.width > 5 || previewShape.height > 5)
+      (previewShape.width > 3 || previewShape.height > 3)
     ) {
       const newAnn: ShapeAnnotation = {
         id: `shape-${Date.now()}`,
@@ -411,6 +381,24 @@ const SinglePageView: React.FC<{
         strokeColor: currentColor,
         strokeWidth: currentStrokeWidth,
         opacity: currentOpacity,
+      };
+      onUpdateAnnotations([...pageAnnotations, newAnn]);
+      setPreviewShape(null);
+    } else if (
+      activeTool === 'redact' &&
+      previewShape &&
+      (previewShape.width > 3 || previewShape.height > 3)
+    ) {
+      const newAnn: RedactAnnotation = {
+        id: `redact-${Date.now()}`,
+        pageIndex,
+        type: 'redact',
+        x: previewShape.x,
+        y: previewShape.y,
+        width: previewShape.width,
+        height: previewShape.height,
+        color: '#000000',
+        overlayText: 'REDACTED',
       };
       onUpdateAnnotations([...pageAnnotations, newAnn]);
       setPreviewShape(null);
@@ -452,6 +440,8 @@ const SinglePageView: React.FC<{
               ? 'text'
               : activeTool === 'draw' || activeTool === 'highlight'
               ? 'crosshair'
+              : activeTool === 'rectangle' || activeTool === 'circle' || activeTool === 'line' || activeTool === 'arrow'
+              ? 'crosshair'
               : 'default',
         }}
       >
@@ -461,6 +451,250 @@ const SinglePageView: React.FC<{
           className="absolute top-0 left-0 pointer-events-none block z-0"
           style={{ width: `${renderWidth}px`, height: `${renderHeight}px` }}
         />
+
+        {/* SVG VECTOR ANNOTATION & DRAWING LAYER */}
+        <svg
+          className="absolute top-0 left-0 w-full h-full pointer-events-none z-10"
+          viewBox={`0 0 ${page.width} ${page.height}`}
+        >
+          <defs>
+            <marker
+              id={`arrow-head-${pageIndex}`}
+              viewBox="0 0 10 10"
+              refX="6"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 1 L 10 5 L 0 9 z" fill={currentColor} />
+            </marker>
+          </defs>
+
+          {/* Render Vector Drawings & Shapes */}
+          {pageAnnotations.map((ann) => {
+            if (ann.type === 'draw' || ann.type === 'highlight') {
+              const dAnn = ann as DrawAnnotation;
+              if (!dAnn.points || dAnn.points.length < 2) return null;
+              const pathData = dAnn.points
+                .map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`)
+                .join(' ');
+
+              return (
+                <path
+                  key={ann.id}
+                  d={pathData}
+                  fill="none"
+                  stroke={dAnn.strokeColor}
+                  strokeWidth={dAnn.strokeWidth}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  opacity={dAnn.opacity ?? 1}
+                  className="pointer-events-auto cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectAnnotation(ann.id);
+                  }}
+                />
+              );
+            }
+
+            if (ann.type === 'rectangle') {
+              const sAnn = ann as ShapeAnnotation;
+              return (
+                <rect
+                  key={ann.id}
+                  x={sAnn.x}
+                  y={sAnn.y}
+                  width={sAnn.width}
+                  height={sAnn.height}
+                  fill={sAnn.fillColor || 'none'}
+                  stroke={sAnn.strokeColor}
+                  strokeWidth={sAnn.strokeWidth}
+                  opacity={sAnn.opacity ?? 1}
+                  className="pointer-events-auto cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectAnnotation(ann.id);
+                  }}
+                />
+              );
+            }
+
+            if (ann.type === 'circle') {
+              const sAnn = ann as ShapeAnnotation;
+              const cx = sAnn.x + sAnn.width / 2;
+              const cy = sAnn.y + sAnn.height / 2;
+              return (
+                <ellipse
+                  key={ann.id}
+                  cx={cx}
+                  cy={cy}
+                  rx={sAnn.width / 2}
+                  ry={sAnn.height / 2}
+                  fill={sAnn.fillColor || 'none'}
+                  stroke={sAnn.strokeColor}
+                  strokeWidth={sAnn.strokeWidth}
+                  opacity={sAnn.opacity ?? 1}
+                  className="pointer-events-auto cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectAnnotation(ann.id);
+                  }}
+                />
+              );
+            }
+
+            if (ann.type === 'line') {
+              const sAnn = ann as ShapeAnnotation;
+              return (
+                <line
+                  key={ann.id}
+                  x1={sAnn.x}
+                  y1={sAnn.y}
+                  x2={sAnn.x + sAnn.width}
+                  y2={sAnn.y + sAnn.height}
+                  stroke={sAnn.strokeColor}
+                  strokeWidth={sAnn.strokeWidth}
+                  opacity={sAnn.opacity ?? 1}
+                  className="pointer-events-auto cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectAnnotation(ann.id);
+                  }}
+                />
+              );
+            }
+
+            if (ann.type === 'arrow') {
+              const sAnn = ann as ShapeAnnotation;
+              return (
+                <line
+                  key={ann.id}
+                  x1={sAnn.x}
+                  y1={sAnn.y}
+                  x2={sAnn.x + sAnn.width}
+                  y2={sAnn.y + sAnn.height}
+                  stroke={sAnn.strokeColor}
+                  strokeWidth={sAnn.strokeWidth}
+                  opacity={sAnn.opacity ?? 1}
+                  markerEnd={`url(#arrow-head-${pageIndex})`}
+                  className="pointer-events-auto cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectAnnotation(ann.id);
+                  }}
+                />
+              );
+            }
+
+            if (ann.type === 'redact') {
+              const rAnn = ann as RedactAnnotation;
+              return (
+                <g key={ann.id} className="pointer-events-auto cursor-pointer" onClick={(e) => { e.stopPropagation(); onSelectAnnotation(ann.id); }}>
+                  <rect
+                    x={rAnn.x}
+                    y={rAnn.y}
+                    width={rAnn.width}
+                    height={rAnn.height}
+                    fill={rAnn.color || '#000000'}
+                  />
+                  <text
+                    x={rAnn.x + rAnn.width / 2}
+                    y={rAnn.y + rAnn.height / 2 + 3}
+                    fill="#ffffff"
+                    fontSize="9"
+                    fontWeight="bold"
+                    textAnchor="middle"
+                  >
+                    {rAnn.overlayText || 'REDACTED'}
+                  </text>
+                </g>
+              );
+            }
+
+            return null;
+          })}
+
+          {/* LIVE DRAWING PREVIEW (While drawing with mouse/pen) */}
+          {(activeTool === 'draw' || activeTool === 'highlight') && currentDrawPoints.length > 1 && (
+            <path
+              d={currentDrawPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')}
+              fill="none"
+              stroke={currentColor}
+              strokeWidth={activeTool === 'highlight' ? currentStrokeWidth * 3 : currentStrokeWidth}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity={activeTool === 'highlight' ? 0.4 : currentOpacity}
+            />
+          )}
+
+          {/* LIVE SHAPE PREVIEW (While dragging rectangle/circle/line/arrow/redact) */}
+          {previewShape && (
+            <>
+              {activeTool === 'rectangle' && (
+                <rect
+                  x={previewShape.x}
+                  y={previewShape.y}
+                  width={previewShape.width}
+                  height={previewShape.height}
+                  fill="none"
+                  stroke={currentColor}
+                  strokeWidth={currentStrokeWidth}
+                  strokeDasharray="4 2"
+                  opacity={currentOpacity}
+                />
+              )}
+              {activeTool === 'circle' && (
+                <ellipse
+                  cx={previewShape.x + previewShape.width / 2}
+                  cy={previewShape.y + previewShape.height / 2}
+                  rx={previewShape.width / 2}
+                  ry={previewShape.height / 2}
+                  fill="none"
+                  stroke={currentColor}
+                  strokeWidth={currentStrokeWidth}
+                  strokeDasharray="4 2"
+                  opacity={currentOpacity}
+                />
+              )}
+              {activeTool === 'line' && (
+                <line
+                  x1={previewShape.x}
+                  y1={previewShape.y}
+                  x2={previewShape.x + previewShape.width}
+                  y2={previewShape.y + previewShape.height}
+                  stroke={currentColor}
+                  strokeWidth={currentStrokeWidth}
+                  strokeDasharray="4 2"
+                  opacity={currentOpacity}
+                />
+              )}
+              {activeTool === 'arrow' && (
+                <line
+                  x1={previewShape.x}
+                  y1={previewShape.y}
+                  x2={previewShape.x + previewShape.width}
+                  y2={previewShape.y + previewShape.height}
+                  stroke={currentColor}
+                  strokeWidth={currentStrokeWidth}
+                  markerEnd={`url(#arrow-head-${pageIndex})`}
+                  opacity={currentOpacity}
+                />
+              )}
+              {activeTool === 'redact' && (
+                <rect
+                  x={previewShape.x}
+                  y={previewShape.y}
+                  width={previewShape.width}
+                  height={previewShape.height}
+                  fill="#000000"
+                  opacity={0.6}
+                />
+              )}
+            </>
+          )}
+        </svg>
 
         {/* INTERACTIVE TEXT OVERLAY (Click any text on the page to edit directly) */}
         {extractedTextItems.map((item) => {
@@ -548,7 +782,7 @@ const SinglePageView: React.FC<{
           </div>
         )}
 
-        {/* USER ANNOTATIONS LAYER */}
+        {/* USER ANNOTATIONS LAYER (DOM Layer for Text, Images, Signatures, Stamps) */}
         {pageAnnotations.map((ann) => {
           const isSelected = selectedAnnotationId === ann.id;
 
