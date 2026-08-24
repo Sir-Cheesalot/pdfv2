@@ -109,6 +109,53 @@ function autoTrimCanvas(canvas: HTMLCanvasElement): HTMLCanvasElement | null {
   return trimmedCanvas;
 }
 
+/**
+ * Decorative fills often survive text masking (for example a coloured heading
+ * background). A real visual has either meaningful colour variation or a
+ * substantial amount of line/detail contrast; a flat colour alone is not an
+ * image or diagram.
+ */
+function isMeaningfulVisual(canvas: HTMLCanvasElement): boolean {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return false;
+
+  const { width, height } = canvas;
+  const pixels = ctx.getImageData(0, 0, width, height).data;
+  const colourBuckets = new Set<string>();
+  let nonWhite = 0;
+  let transitions = 0;
+  const step = Math.max(1, Math.floor(Math.min(width, height) / 110));
+
+  for (let y = 0; y < height; y += step) {
+    for (let x = 0; x < width; x += step) {
+      const index = (y * width + x) * 4;
+      const r = pixels[index];
+      const g = pixels[index + 1];
+      const b = pixels[index + 2];
+      const filled = r < 242 || g < 242 || b < 242;
+      if (!filled) continue;
+
+      nonWhite++;
+      colourBuckets.add(`${Math.floor(r / 40)}-${Math.floor(g / 40)}-${Math.floor(b / 40)}`);
+
+      if (x + step < width) {
+        const next = (y * width + x + step) * 4;
+        const difference = Math.abs(r - pixels[next]) + Math.abs(g - pixels[next + 1]) + Math.abs(b - pixels[next + 2]);
+        if (difference > 75) transitions++;
+      }
+      if (y + step < height) {
+        const below = ((y + step) * width + x) * 4;
+        const difference = Math.abs(r - pixels[below]) + Math.abs(g - pixels[below + 1]) + Math.abs(b - pixels[below + 2]);
+        if (difference > 75) transitions++;
+      }
+    }
+  }
+
+  if (nonWhite < 20) return false;
+  const detailRatio = transitions / nonWhite;
+  return colourBuckets.size >= 3 || detailRatio >= 0.12;
+}
+
 export class PdfRenderService {
   private static documentCache: Map<string, pdfjsLib.PDFDocumentProxy> = new Map();
 
@@ -436,7 +483,7 @@ export class PdfRenderService {
         if (!trimmed) continue;
 
         // Verify trimmed figure is large enough to be a genuine graphic
-        if (trimmed.width < 40 || trimmed.height < 40) continue;
+        if (trimmed.width < 24 || trimmed.height < 24 || !isMeaningfulVisual(trimmed)) continue;
 
         const dataUrl = trimmed.toDataURL('image/png');
         const displayW = Math.min(trimmed.width / (scale / 1.5), 520);
