@@ -703,10 +703,15 @@ export class PdfRenderService {
         const currentLine = processedLines[i];
 
         // 1. TABLE GROUPING
+        // A single line with large spaces is usually a heading, a label/value
+        // pair, or multi-column prose - not a table. Require a repeated grid
+        // on the immediately following line before creating table structure.
         if (
           currentLine.isTableCandidate &&
-          (i + 1 >= processedLines.length || processedLines[i + 1].isTableCandidate || currentLine.cells.length >= 3)
+          i + 1 < processedLines.length &&
+          processedLines[i + 1].isTableCandidate
         ) {
+          const tableStartIndex = i;
           const tableRows: string[][] = [];
           let maxCols = 0;
 
@@ -725,7 +730,11 @@ export class PdfRenderService {
             }
           }
 
-          if (tableRows.length > 0) {
+          const columnCounts = new Map<number, number>();
+          tableRows.forEach((row) => columnCounts.set(row.length, (columnCounts.get(row.length) || 0) + 1));
+          const repeatedColumnCount = [...columnCounts.values()].some((count) => count >= 2);
+
+          if (tableRows.length >= 2 && repeatedColumnCount) {
             const normalizedRows = tableRows.map((r) => {
               const rowCopy = [...r];
               while (rowCopy.length < maxCols) {
@@ -745,6 +754,10 @@ export class PdfRenderService {
             });
             continue;
           }
+
+          // Not enough repeated grid evidence: process the original line as
+          // ordinary document content instead of losing it to a false table.
+          i = tableStartIndex;
         }
 
         // 2. HEADINGS
