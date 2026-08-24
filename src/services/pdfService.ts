@@ -166,19 +166,10 @@ export class PdfService {
     pdfBytes: Uint8Array,
     pageIndex: number,
     oldText: string,
-    newText: string,
-    fontFamily: string = 'Helvetica',
-    fontSize: number = 12,
-    x: number = 0,
-    y: number = 0
+    newText: string
   ): Promise<Uint8Array> {
     const { PdfStreamEditor } = await import('./pdfStreamEditor');
-    return await PdfStreamEditor.updateNativeText(pdfBytes, pageIndex, oldText, newText, {
-      x,
-      y,
-      fontSize,
-      fontName: fontFamily,
-    });
+    return await PdfStreamEditor.updateNativeText(pdfBytes, pageIndex, oldText, newText);
   }
 
   /**

@@ -436,11 +436,7 @@ export function usePdfDocument() {
           pdfBytes,
           pageIndex,
           originalText,
-          newText,
-          coords?.fontName || 'Helvetica',
-          coords?.fontSize || 12,
-          coords?.x || 72,
-          coords?.y || 700
+          newText
         );
         PdfRenderService.invalidateCache(docId);
         setPdfBytes(updated);

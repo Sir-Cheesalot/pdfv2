@@ -215,8 +215,7 @@ export class PdfStreamEditor {
     pdfBytes: Uint8Array,
     pageIndex: number,
     oldText: string,
-    newText: string,
-    fallbackCoords?: { x: number; y: number; fontSize: number; fontName?: string }
+    newText: string
   ): Promise<Uint8Array> {
     if (oldText === newText) return pdfBytes;
 
@@ -306,45 +305,20 @@ export class PdfStreamEditor {
         }
         dict.set(PDFName.of('Length'), pdfDoc.context.obj(finalBytes.length));
 
-        const newStream = PDFRawStream.of(dict, finalBytes);
-        page.node.set(PDFName.of('Contents'), page.node.context.register(newStream));
+        const newStreamRef = page.node.context.register(PDFRawStream.of(dict, finalBytes));
+        const contents = page.node.get(PDFName.of('Contents'));
+        if (contents instanceof PDFArray) {
+          // Preserve the other streams; replacing /Contents would drop artwork.
+          contents.set(info.streamIndex, newStreamRef);
+        } else {
+          page.node.set(PDFName.of('Contents'), newStreamRef);
+        }
         break;
       }
     }
 
-    // 5. Fallback if stream was compacted into non-standard binary structure
-    if (!wasReplaced && fallbackCoords) {
-      const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const font = helvetica;
-      const fontSize = fallbackCoords.fontSize || 12;
-      const pdfY = page.getHeight() - fallbackCoords.y - fontSize;
-
-      const appendStreamText = `
-q
-BT
-/${font.name} ${fontSize} Tf
-1 0 0 1 ${fallbackCoords.x} ${Math.max(pdfY, 0)} Tm
-0 0 0 rg
-(${escapePdfString(newText)}) Tj
-ET
-Q
-`;
-      const appendBytes = deflate(encoder.encode(appendStreamText));
-      const dict = page.node.context.obj({
-        Filter: PDFName.of('FlateDecode'),
-        Length: appendBytes.length,
-      });
-      const appendStream = PDFRawStream.of(dict, appendBytes);
-      const currentContents = page.node.get(PDFName.of('Contents'));
-
-      if (currentContents instanceof PDFArray) {
-        currentContents.push(page.node.context.register(appendStream));
-      } else if (currentContents) {
-        const arr = page.node.context.obj([currentContents, page.node.context.register(appendStream)]);
-        page.node.set(PDFName.of('Contents'), arr);
-      } else {
-        page.node.set(PDFName.of('Contents'), page.node.context.register(appendStream));
-      }
+    if (!wasReplaced) {
+      throw new Error('This text cannot be safely edited in place. No overlay or PDF changes were created.');
     }
 
     return await pdfDoc.save();
