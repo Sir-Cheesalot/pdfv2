@@ -8,11 +8,16 @@ import {
   AlignCenter,
   AlignRight,
   Layers,
+  FileText,
+  Shapes,
+  Image as ImageIcon,
+  Cpu,
 } from 'lucide-react';
-import type { Annotation, ToolType } from '../../types/pdf';
+import type { Annotation, ToolType, PdfContentObject } from '../../types/pdf';
 
 interface PropertyBarProps {
   selectedAnnotation: Annotation | null;
+  selectedContentObject?: PdfContentObject | null;
   activeTool: ToolType;
   currentColor: string;
   currentStrokeWidth: number;
@@ -45,6 +50,7 @@ const COLOR_PRESETS = [
 
 export const PropertyBar: React.FC<PropertyBarProps> = ({
   selectedAnnotation,
+  selectedContentObject,
   activeTool,
   currentColor,
   currentStrokeWidth,
@@ -71,7 +77,43 @@ export const PropertyBar: React.FC<PropertyBarProps> = ({
   const isRedact = activeTool === 'redact' || selectedAnnotation?.type === 'redact';
 
   return (
-    <div className="bg-white/90 backdrop-blur-2xl border border-black/10 rounded-2xl shadow-xl px-3.5 py-1.5 flex items-center space-x-3 select-none z-20 text-xs text-slate-700">
+    <div className="bg-white/95 backdrop-blur-2xl border border-black/10 rounded-2xl shadow-xl px-4 py-2 flex flex-wrap items-center gap-3 select-none z-20 text-xs text-slate-700">
+      {/* UNDERLYING PDF CONTENT OBJECT IDENTIFIER BADGE */}
+      {selectedContentObject && (
+        <div className="flex items-center space-x-2 border-r border-black/10 pr-3">
+          {selectedContentObject.type === 'NativeText' && (
+            <div className="flex items-center space-x-1.5 bg-blue-50 text-[#0071e3] border border-blue-200/80 px-2.5 py-1 rounded-lg">
+              <FileText className="w-3.5 h-3.5" />
+              <span className="font-semibold text-[11px]">Native PDF Text</span>
+              <span className="text-[10px] text-blue-600/70 font-mono">
+                {selectedContentObject.fontName || 'Helvetica'} ({selectedContentObject.fontSize || 12}pt)
+              </span>
+            </div>
+          )}
+
+          {selectedContentObject.type === 'VectorPath' && (
+            <div className="flex items-center space-x-1.5 bg-amber-50 text-amber-700 border border-amber-200/80 px-2.5 py-1 rounded-lg">
+              <Cpu className="w-3.5 h-3.5" />
+              <span className="font-semibold text-[11px]">Vector / Outlined Text</span>
+            </div>
+          )}
+
+          {selectedContentObject.type === 'Image' && (
+            <div className="flex items-center space-x-1.5 bg-purple-50 text-purple-700 border border-purple-200/80 px-2.5 py-1 rounded-lg">
+              <ImageIcon className="w-3.5 h-3.5" />
+              <span className="font-semibold text-[11px]">Raster / Image Text (Pixel Data)</span>
+            </div>
+          )}
+
+          {selectedContentObject.type === 'Shape' && (
+            <div className="flex items-center space-x-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200/80 px-2.5 py-1 rounded-lg">
+              <Shapes className="w-3.5 h-3.5" />
+              <span className="font-semibold text-[11px]">Vector Graphic</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Color Palette */}
       {!isRedact && (
         <div className="flex items-center space-x-1.5 border-r border-black/10 pr-3">
@@ -79,10 +121,10 @@ export const PropertyBar: React.FC<PropertyBarProps> = ({
             <button
               key={color}
               onClick={() => onColorChange(color)}
-              className={`w-4 h-4 rounded-full border transition-all ${
+              className={`w-4 h-4 rounded-full transition-transform border border-black/15 ${
                 currentColor.toLowerCase() === color.toLowerCase()
-                  ? 'border-slate-800 scale-110 shadow-xs ring-2 ring-[#0071e3]'
-                  : 'border-black/15 hover:scale-105'
+                  ? 'scale-125 ring-2 ring-[#0071e3] ring-offset-1'
+                  : 'hover:scale-110'
               }`}
               style={{ backgroundColor: color }}
               title={color}
@@ -92,156 +134,139 @@ export const PropertyBar: React.FC<PropertyBarProps> = ({
             type="color"
             value={currentColor}
             onChange={(e) => onColorChange(e.target.value)}
-            className="w-4 h-4 rounded-full cursor-pointer border-0 bg-transparent"
+            className="w-4 h-4 rounded-full border border-black/15 cursor-pointer p-0 bg-transparent"
             title="Custom color"
           />
         </div>
       )}
 
-      {/* Redact Color Switcher */}
-      {isRedact && (
-        <div className="flex items-center space-x-1 border-r border-black/10 pr-3">
-          <button
-            onClick={() => onColorChange('#000000')}
-            className={`px-2.5 py-0.5 rounded-lg text-xs font-medium ${
-              currentColor === '#000000' ? 'bg-black text-white' : 'text-slate-600 hover:bg-black/5'
-            }`}
-          >
-            Blackout
-          </button>
-          <button
-            onClick={() => onColorChange('#ffffff')}
-            className={`px-2.5 py-0.5 rounded-lg text-xs font-medium border border-black/10 ${
-              currentColor === '#ffffff' ? 'bg-slate-100 text-slate-900 font-semibold' : 'text-slate-600 hover:bg-black/5'
-            }`}
-          >
-            Whiteout
-          </button>
-        </div>
-      )}
-
-      {/* Text Properties */}
-      {isTextTool && (
-        <div className="flex items-center space-x-1.5 border-r border-black/10 pr-3">
+      {/* Text Options (Font, Size, Style, Alignment) */}
+      {(isTextTool || selectedContentObject?.type === 'NativeText') && (
+        <div className="flex items-center space-x-2 border-r border-black/10 pr-3">
+          {/* Font Family Selector */}
           <select
             value={currentFontFamily}
             onChange={(e) => onFontFamilyChange(e.target.value)}
-            className="bg-black/5 text-slate-800 border border-black/10 rounded-lg px-2 py-0.5 text-xs outline-none"
+            className="bg-[#f5f5f7] border border-black/10 rounded-lg px-2 py-0.5 text-xs text-slate-800 outline-none focus:ring-1 focus:ring-[#0071e3] font-medium"
           >
-            <option value="Helvetica">Helvetica</option>
-            <option value="TimesRoman">Times</option>
-            <option value="Courier">Courier</option>
+            <option value="Helvetica">Helvetica (Sans)</option>
+            <option value="TimesRoman">Times (Serif)</option>
+            <option value="Courier">Courier (Mono)</option>
           </select>
 
-          <select
-            value={currentFontSize}
-            onChange={(e) => onFontSizeChange(Number(e.target.value))}
-            className="bg-black/5 text-slate-800 border border-black/10 rounded-lg px-2 py-0.5 text-xs outline-none w-14"
-          >
-            {[10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48].map((size) => (
-              <option key={size} value={size}>
-                {size}px
-              </option>
-            ))}
-          </select>
+          {/* Font Size Selector */}
+          <div className="flex items-center space-x-1">
+            <input
+              type="number"
+              min="8"
+              max="72"
+              value={currentFontSize}
+              onChange={(e) => onFontSizeChange(Number(e.target.value))}
+              className="w-12 bg-[#f5f5f7] border border-black/10 rounded-lg px-1.5 py-0.5 text-xs text-slate-800 text-center outline-none focus:ring-1 focus:ring-[#0071e3] font-medium"
+            />
+            <span className="text-[10px] text-slate-400">pt</span>
+          </div>
 
-          <button
-            onClick={onToggleBold}
-            className="p-1 text-slate-600 hover:text-slate-900 hover:bg-black/5 rounded-lg"
-            title="Bold"
-          >
-            <Bold className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={onToggleItalic}
-            className="p-1 text-slate-600 hover:text-slate-900 hover:bg-black/5 rounded-lg"
-            title="Italic"
-          >
-            <Italic className="w-3.5 h-3.5" />
-          </button>
+          {/* Bold / Italic */}
+          <div className="flex items-center space-x-0.5 bg-[#f5f5f7] p-0.5 rounded-lg border border-black/5">
+            <button
+              onClick={onToggleBold}
+              className="p-1 rounded hover:bg-black/5 text-slate-700 active:scale-95"
+              title="Bold"
+            >
+              <Bold className="w-3 h-3" />
+            </button>
+            <button
+              onClick={onToggleItalic}
+              className="p-1 rounded hover:bg-black/5 text-slate-700 active:scale-95"
+              title="Italic"
+            >
+              <Italic className="w-3 h-3" />
+            </button>
+          </div>
 
-          <button
-            onClick={() => onAlignChange('left')}
-            className="p-1 text-slate-600 hover:text-slate-900 hover:bg-black/5 rounded-lg"
-            title="Align Left"
-          >
-            <AlignLeft className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => onAlignChange('center')}
-            className="p-1 text-slate-600 hover:text-slate-900 hover:bg-black/5 rounded-lg"
-            title="Align Center"
-          >
-            <AlignCenter className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => onAlignChange('right')}
-            className="p-1 text-slate-600 hover:text-slate-900 hover:bg-black/5 rounded-lg"
-            title="Align Right"
-          >
-            <AlignRight className="w-3.5 h-3.5" />
-          </button>
+          {/* Alignment */}
+          <div className="flex items-center space-x-0.5 bg-[#f5f5f7] p-0.5 rounded-lg border border-black/5">
+            <button
+              onClick={() => onAlignChange('left')}
+              className="p-1 rounded hover:bg-black/5 text-slate-700 active:scale-95"
+              title="Align Left"
+            >
+              <AlignLeft className="w-3 h-3" />
+            </button>
+            <button
+              onClick={() => onAlignChange('center')}
+              className="p-1 rounded hover:bg-black/5 text-slate-700 active:scale-95"
+              title="Align Center"
+            >
+              <AlignCenter className="w-3 h-3" />
+            </button>
+            <button
+              onClick={() => onAlignChange('right')}
+              className="p-1 rounded hover:bg-black/5 text-slate-700 active:scale-95"
+              title="Align Right"
+            >
+              <AlignRight className="w-3 h-3" />
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Stroke Width Slider */}
+      {/* Stroke Width Slider for Drawing/Shapes */}
       {isDrawOrShape && (
         <div className="flex items-center space-x-2 border-r border-black/10 pr-3">
-          <span className="text-[11px] text-slate-500">Size:</span>
+          <span className="text-[11px] text-slate-500 font-medium">Thickness:</span>
           <input
             type="range"
             min="1"
-            max="32"
+            max="20"
             value={currentStrokeWidth}
             onChange={(e) => onStrokeWidthChange(Number(e.target.value))}
-            className="w-16 accent-[#0071e3] cursor-pointer h-1"
+            className="w-16 h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-[#0071e3]"
           />
-          <span className="text-[11px] font-mono text-slate-500 w-5">{currentStrokeWidth}px</span>
+          <span className="text-[11px] font-mono text-slate-600 w-4">
+            {currentStrokeWidth}
+          </span>
         </div>
       )}
 
       {/* Opacity Slider */}
       <div className="flex items-center space-x-2 border-r border-black/10 pr-3">
-        <span className="text-[11px] text-slate-500">Opacity:</span>
+        <span className="text-[11px] text-slate-500 font-medium">Opacity:</span>
         <input
           type="range"
           min="0.1"
-          max="1"
+          max="1.0"
           step="0.05"
           value={currentOpacity}
           onChange={(e) => onOpacityChange(Number(e.target.value))}
-          className="w-14 accent-[#0071e3] cursor-pointer h-1"
+          className="w-14 h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-[#0071e3]"
         />
-        <span className="text-[11px] font-mono text-slate-500 w-7">{Math.round(currentOpacity * 100)}%</span>
+        <span className="text-[11px] font-mono text-slate-600 w-7">
+          {Math.round(currentOpacity * 100)}%
+        </span>
       </div>
 
-      {/* Selected Element Actions */}
+      {/* Selection Operations (Delete, Duplicate, Layering) */}
       {selectedAnnotation && (
-        <div className="flex items-center space-x-0.5">
+        <div className="flex items-center space-x-1">
           <button
             onClick={onDuplicateSelected}
-            className="p-1 text-slate-600 hover:text-[#34c759] hover:bg-black/5 rounded-lg"
+            className="p-1.5 rounded-lg hover:bg-black/5 text-slate-700 active:scale-95"
             title="Duplicate"
           >
             <Copy className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={onBringToFront}
-            className="p-1 text-slate-600 hover:text-[#0071e3] hover:bg-black/5 rounded-lg"
+            className="p-1.5 rounded-lg hover:bg-black/5 text-slate-700 active:scale-95"
             title="Bring to Front"
           >
             <Layers className="w-3.5 h-3.5" />
           </button>
           <button
-            onClick={onSendToBack}
-            className="p-1 text-slate-600 hover:text-[#0071e3] hover:bg-black/5 rounded-lg"
-            title="Send to Back"
-          >
-            <Layers className="w-3.5 h-3.5 rotate-180" />
-          </button>
-          <button
             onClick={onDeleteSelected}
-            className="p-1 text-slate-600 hover:text-[#ff3b30] hover:bg-black/5 rounded-lg"
+            className="p-1.5 rounded-lg hover:bg-red-50 text-red-600 active:scale-95"
             title="Delete"
           >
             <Trash2 className="w-3.5 h-3.5" />

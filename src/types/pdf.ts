@@ -16,6 +16,50 @@ export type ToolType =
 
 export type EditorMode = 'edit' | 'doc' | 'organize' | 'merge' | 'split' | 'metadata';
 
+export type PdfContentType =
+  | 'NativeText'
+  | 'VectorPath'
+  | 'Image'
+  | 'Shape'
+  | 'Table'
+  | 'Unknown';
+
+export interface PdfContentObject {
+  id: string;
+  type: PdfContentType;
+  pageIndex: number;
+  // Visual bounding box in PDF points (top-left origin)
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  // Stream metadata & operators
+  streamIndex?: number;
+  opStartIndex?: number;
+  opEndIndex?: number;
+  rawOperator?: string;
+  // Native Text Properties
+  text?: string;
+  originalText?: string;
+  fontName?: string;
+  fontSize?: number;
+  color?: string;
+  bold?: boolean;
+  italic?: boolean;
+  matrix?: number[]; // [a, b, c, d, e, f]
+  charSpacing?: number;
+  wordSpacing?: number;
+  renderingMode?: number;
+  // Vector Path Properties
+  pathOps?: string[];
+  strokeColor?: string;
+  fillColor?: string;
+  strokeWidth?: number;
+  // Image & XObject Properties
+  xobjectName?: string;
+  dataUrl?: string;
+}
+
 export interface Point {
   x: number;
   y: number;

@@ -160,72 +160,25 @@ export class PdfService {
   }
 
   /**
-   * True Stream Unvectorization: Rewrites PDF content streams directly at the binary/operator level
-   * Modifies original text glyphs without placing whiteout coverups.
+   * True Underlying PDF Text Editing: Directly modifies PDF content stream operators without coverup masks
    */
   public static async rewritePageTextStream(
     pdfBytes: Uint8Array,
     pageIndex: number,
-    originalText: string,
+    oldText: string,
     newText: string,
     fontFamily: string = 'Helvetica',
     fontSize: number = 12,
     x: number = 0,
     y: number = 0
   ): Promise<Uint8Array> {
-    const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
-    if (pageIndex < 0 || pageIndex >= pdfDoc.getPageCount()) return pdfBytes;
-
-    const page = pdfDoc.getPage(pageIndex);
-    const pageHeight = page.getHeight();
-
-    // 1. Process page content streams
-    const contents = page.node.Contents();
-    if (contents) {
-      const streams: PDFStream[] = [];
-      if (contents instanceof PDFArray) {
-        for (let i = 0; i < contents.size(); i++) {
-          const s = contents.lookup(i);
-          if (s instanceof PDFStream) streams.push(s);
-        }
-      } else if (contents instanceof PDFStream) {
-        streams.push(contents);
-      }
-
-      for (const stream of streams) {
-        try {
-          const rawBytes = stream.getContents();
-          let decodedStr = new TextDecoder('latin1').decode(rawBytes);
-
-          if (originalText && decodedStr.includes(originalText)) {
-            // Replace text in literal string operator: (originalText) Tj
-            const escaped = originalText.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-            const pattern = new RegExp(`\\(${escaped}\\)`, 'g');
-            decodedStr = decodedStr.replace(pattern, `(${newText})`);
-
-            // Re-encode decoded content back into stream
-            const encoded = new TextEncoder().encode(decodedStr);
-            const rawStream = PDFRawStream.of(stream.dict, encoded);
-            page.node.set(PDFName.of('Contents'), rawStream);
-          }
-        } catch (e) {
-          console.warn('Could not rewrite raw stream:', e);
-        }
-      }
-    }
-
-    // 2. Draw replacement text at exact position if text stream was replaced
-    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const pdfY = pageHeight - y - fontSize;
-    page.drawText(newText, {
+    const { PdfStreamEditor } = await import('./pdfStreamEditor');
+    return await PdfStreamEditor.updateNativeText(pdfBytes, pageIndex, oldText, newText, {
       x,
-      y: pdfY,
-      size: fontSize,
-      font,
-      color: rgb(0, 0, 0),
+      y,
+      fontSize,
+      fontName: fontFamily,
     });
-
-    return await pdfDoc.save();
   }
 
   /**

@@ -11,6 +11,7 @@ import type {
   WatermarkConfig,
   RebuiltPage,
   ExtractedTextItem,
+  PdfContentObject,
 } from '../../types/pdf';
 import { PdfRenderService } from '../../services/pdfRenderService';
 import * as pdfjsLib from 'pdfjs-dist';
@@ -30,10 +31,18 @@ interface CanvasEditorProps {
   annotations: Record<number, Annotation[]>;
   watermark: WatermarkConfig | null;
   selectedAnnotationId: string | null;
+  selectedContentObject?: PdfContentObject | null;
   rebuiltPages?: RebuiltPage[];
   onUpdateRebuiltText?: (pageIndex: number, elemId: string, newText: string) => void;
+  onUpdatePageTextInStream?: (
+    pageIndex: number,
+    oldText: string,
+    newText: string,
+    coords?: { x: number; y: number; fontSize: number; fontName?: string }
+  ) => void;
   onSelectPage: (index: number) => void;
   onSelectAnnotation: (id: string | null) => void;
+  onSelectContentObject?: (obj: PdfContentObject | null) => void;
   onUpdateAnnotations: (pageIndex: number, annotations: Annotation[]) => void;
   onDeleteAnnotation: (id: string) => void;
 }
@@ -58,6 +67,13 @@ const SinglePageView: React.FC<{
   selectedAnnotationId: string | null;
   onFocusPage: (index: number) => void;
   onSelectAnnotation: (id: string | null) => void;
+  onSelectContentObject?: (obj: PdfContentObject | null) => void;
+  onUpdatePageTextInStream?: (
+    pageIndex: number,
+    oldText: string,
+    newText: string,
+    coords?: { x: number; y: number; fontSize: number; fontName?: string }
+  ) => void;
   onUpdateAnnotations: (newAnns: Annotation[]) => void;
   onDeleteAnnotation: (id: string) => void;
 }> = ({
@@ -79,6 +95,8 @@ const SinglePageView: React.FC<{
   selectedAnnotationId,
   onFocusPage,
   onSelectAnnotation,
+  onSelectContentObject,
+  onUpdatePageTextInStream,
   onUpdateAnnotations,
   onDeleteAnnotation,
 }) => {
@@ -207,39 +225,27 @@ const SinglePageView: React.FC<{
     [zoom]
   );
 
-  // In-place text save handler
+  // In-place text save handler — modifies underlying PDF stream directly
   const handleSaveTextItemEdit = (item: ExtractedTextItem, newText: string) => {
     if (!newText || newText === item.str) {
       setEditingTextItemId(null);
       return;
     }
 
+    const oldStr = item.str;
     item.str = newText;
     setExtractedTextItems((prev) =>
       prev.map((it) => (it.id === item.id ? { ...it, str: newText } : it))
     );
 
-    const textAnnotation: TextAnnotation = {
-      id: `text-${item.id}-${Date.now()}`,
-      pageIndex,
-      type: 'text',
+    // Call true underlying PDF stream editor (zero coverups)
+    onUpdatePageTextInStream?.(pageIndex, oldStr, newText, {
       x: item.x,
       y: item.y,
-      width: Math.max(item.width + 8, 30),
-      height: Math.max(item.height + 4, 18),
-      text: newText,
       fontSize: item.fontSize,
-      fontFamily: (item.fontName?.includes('Times')
-        ? 'TimesRoman'
-        : item.fontName?.includes('Courier')
-        ? 'Courier'
-        : 'Helvetica') as any,
-      color: '#1d1d1f',
-      backgroundColor: '#ffffff',
-      opacity: 1,
-    };
+      fontName: item.fontName,
+    });
 
-    onUpdateAnnotations([...pageAnnotations, textAnnotation]);
     setEditingTextItemId(null);
   };
 
@@ -292,6 +298,7 @@ const SinglePageView: React.FC<{
       setIsInteracting(false);
     } else if (activeTool === 'select') {
       onSelectAnnotation(null);
+      onSelectContentObject?.(null);
     }
   };
 
@@ -469,6 +476,20 @@ const SinglePageView: React.FC<{
               onClick={(e) => {
                 e.stopPropagation();
                 setEditingTextItemId(item.id);
+                onSelectContentObject?.({
+                  id: `native-text-${pageIndex}-${item.id}`,
+                  type: 'NativeText',
+                  pageIndex,
+                  x: item.x,
+                  y: item.y,
+                  width: item.width,
+                  height: item.height,
+                  text: item.str,
+                  originalText: item.str,
+                  fontName: item.fontName,
+                  fontSize: item.fontSize,
+                  color: '#000000',
+                });
               }}
               className={`text-item-block absolute cursor-text select-text transition-all ${
                 isEditing
@@ -483,7 +504,7 @@ const SinglePageView: React.FC<{
                 minWidth: `${Math.max(item.width * zoom, 24)}px`,
                 minHeight: `${Math.max(item.height * zoom, 16)}px`,
               }}
-              title="Click to edit text directly"
+              title="Click to edit native PDF text directly"
             >
               {isEditing ? (
                 <input
@@ -657,8 +678,11 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
   annotations,
   watermark,
   selectedAnnotationId,
+  selectedContentObject,
   onSelectPage,
   onSelectAnnotation,
+  onSelectContentObject,
+  onUpdatePageTextInStream,
   onUpdateAnnotations,
   onDeleteAnnotation,
 }) => {
@@ -722,6 +746,8 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
           selectedAnnotationId={selectedAnnotationId}
           onFocusPage={onSelectPage}
           onSelectAnnotation={onSelectAnnotation}
+          onSelectContentObject={onSelectContentObject}
+          onUpdatePageTextInStream={onUpdatePageTextInStream}
           onUpdateAnnotations={(newAnns) => onUpdateAnnotations(idx, newAnns)}
           onDeleteAnnotation={onDeleteAnnotation}
         />

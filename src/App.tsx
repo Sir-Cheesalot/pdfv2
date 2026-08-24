@@ -6,7 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
-import type { ToolType, Annotation, RedactAnnotation, TextAnnotation } from './types/pdf';
+import type { ToolType, Annotation, RedactAnnotation, TextAnnotation, PdfContentObject } from './types/pdf';
 import { usePdfDocument } from './hooks/usePdfDocument';
 import { Navbar } from './components/common/Navbar';
 import { ThumbnailSidebar } from './components/sidebar/ThumbnailSidebar';
@@ -75,6 +75,7 @@ export const App: React.FC = () => {
   const [currentFontFamily, setCurrentFontFamily] = useState<string>('Helvetica');
   const [currentOpacity, setCurrentOpacity] = useState<number>(1.0);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const [selectedContentObject, setSelectedContentObject] = useState<PdfContentObject | null>(null);
 
   // Modals
   const [isSignatureModalOpen, setIsSignatureModalOpen] = useState(false);
@@ -427,6 +428,7 @@ export const App: React.FC = () => {
           />
 
           {(selectedAnnotation ||
+            selectedContentObject ||
             activeTool === 'text' ||
             activeTool === 'draw' ||
             activeTool === 'highlight' ||
@@ -437,6 +439,7 @@ export const App: React.FC = () => {
             activeTool === 'redact') && (
             <PropertyBar
               selectedAnnotation={selectedAnnotation}
+              selectedContentObject={selectedContentObject}
               activeTool={activeTool}
               currentColor={currentColor}
               currentStrokeWidth={currentStrokeWidth}
@@ -590,10 +593,13 @@ export const App: React.FC = () => {
                 annotations={annotations}
                 watermark={watermark}
                 selectedAnnotationId={selectedAnnotationId}
+                selectedContentObject={selectedContentObject}
                 rebuiltPages={rebuiltPages}
                 onUpdateRebuiltText={updateRebuiltTextElement}
+                onUpdatePageTextInStream={updatePageTextInStream}
                 onSelectPage={setActivePageIndex}
                 onSelectAnnotation={setSelectedAnnotationId}
+                onSelectContentObject={setSelectedContentObject}
                 onUpdateAnnotations={updatePageAnnotations}
                 onDeleteAnnotation={handleDeleteSelectedAnnotation}
               />

@@ -428,7 +428,7 @@ export function usePdfDocument() {
       pageIndex: number,
       originalText: string,
       newText: string,
-      item: { x: number; y: number; fontSize: number; fontName?: string }
+      coords?: { x: number; y: number; fontSize: number; fontName?: string }
     ) => {
       if (!pdfBytes) return;
       try {
@@ -437,10 +437,10 @@ export function usePdfDocument() {
           pageIndex,
           originalText,
           newText,
-          item.fontName || 'Helvetica',
-          item.fontSize,
-          item.x,
-          item.y
+          coords?.fontName || 'Helvetica',
+          coords?.fontSize || 12,
+          coords?.x || 72,
+          coords?.y || 700
         );
         PdfRenderService.invalidateCache(docId);
         setPdfBytes(updated);
