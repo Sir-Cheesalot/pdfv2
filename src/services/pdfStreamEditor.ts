@@ -389,27 +389,55 @@ export class PdfStreamEditor {
         }
       }
 
-      // 5. Word-by-word token substitution in TJ array
+      // 5. Advanced TJ array reconstruction (e.g., [(S) 10 (t) 2 (r)] TJ)
       if (!wasReplaced) {
-        const words = oldText.trim().split(/\s+/);
-        if (words.length > 0 && streamText.includes(words[0])) {
-          let updatedText = streamText;
-          let allWordsFound = true;
-          for (const w of words) {
-            if (updatedText.includes(`(${w})`)) {
-              // Match word
-            } else {
-              allWordsFound = false;
+        // Regex to find all [...] TJ blocks
+        const tjArrayPattern = /\[(.*?)\]\s*TJ/g;
+        let match;
+        let updatedStream = streamText;
+
+        while ((match = tjArrayPattern.exec(streamText)) !== null) {
+          const innerArray = match[1];
+          // Extract all strings inside () or <>
+          let extractedText = '';
+          const strRegex = /\((.*?)\)|<([a-fA-F0-9]+)>/g;
+          let strMatch;
+          
+          while ((strMatch = strRegex.exec(innerArray)) !== null) {
+            if (strMatch[1] !== undefined) {
+              extractedText += strMatch[1].replace(/\\\\/g, '\\').replace(/\\\(/g, '(').replace(/\\\)/g, ')');
+            } else if (strMatch[2] !== undefined) {
+              // Assuming hex is simple mapping for now, to be robust we just check if it matches decoded
+              let hexStr = '';
+              for (let i = 0; i < strMatch[2].length; i += 2) {
+                hexStr += String.fromCharCode(parseInt(strMatch[2].substring(i, i + 2), 16));
+              }
+              extractedText += hexStr;
             }
           }
-          if (allWordsFound) {
-            updatedText = updatedText.replace(`(${words[0]})`, `(${escapedNew})`);
-            for (let wIdx = 1; wIdx < words.length; wIdx++) {
-              updatedText = updatedText.replace(`(${words[wIdx]})`, `()`);
-            }
-            streamText = updatedText;
+
+          if (extractedText.includes(oldText)) {
+            // Found the old text broken up inside a TJ array!
+            // Replace the entire TJ array with the new text using the most common encoding (literal string)
+            const newTjArray = `[(${escapePdfString(extractedText.replace(oldText, newText))})] TJ`;
+            updatedStream = updatedStream.replace(match[0], newTjArray);
             wasReplaced = true;
           }
+        }
+        if (wasReplaced) {
+          streamText = updatedStream;
+        }
+      }
+
+      // 5.5 Advanced Tj separate reconstruction (e.g., (S) Tj ... (t) Tj)
+      // This requires full parser which is complex, but we can do a naive check for scattered characters
+      if (!wasReplaced) {
+        // Check if characters of oldText are scattered across consecutive Tj operators
+        const chars = oldText.split('').map(c => `\\(${escapeRegex(escapePdfString(c))}\\)\\s*Tj`);
+        const scatteredPattern = new RegExp(chars.join('\\s*(?:[\\-\\d\\.]+\\s+T[md]\\s+)?'), 'g');
+        if (scatteredPattern.test(streamText)) {
+          streamText = streamText.replace(scatteredPattern, `(${escapePdfString(newText)}) Tj`);
+          wasReplaced = true;
         }
       }
 
@@ -436,53 +464,7 @@ export class PdfStreamEditor {
       }
     }
 
-    // 6. Safe Stream Injection Fallback:
-    // If the text couldn't be replaced directly in the stream, we must cover the old text 
-    // with a white rectangle and write the new text on top.
-    if (!wasReplaced && fallbackCoords) {
-      const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const font = helvetica; // Ideally we look up fallbackCoords.fontName, but pdf-lib can't easily reuse embedded fonts for new text if they are subsetted.
-      const fontSize = fallbackCoords.fontSize || 12;
-      const pdfY = page.getHeight() - fallbackCoords.y - fontSize;
-      
-      // Approximate width of old text to cover it up
-      const approxWidth = oldText.length * fontSize * 0.6;
-      const bgHeight = fontSize * 1.2;
-      const bgY = pdfY - (fontSize * 0.2); // slight offset down
-
-      const appendStreamText = `
-q
-% --- Fallback coverup ---
-1 1 1 rg
-${fallbackCoords.x} ${bgY} ${approxWidth} ${bgHeight} re
-f
-% --- New Text ---
-BT
-/${font.name} ${fontSize} Tf
-0 0 0 rg
-1 0 0 1 ${fallbackCoords.x} ${Math.max(pdfY, 0)} Tm
-(${escapePdfString(newText)}) Tj
-ET
-Q
-`;
-      const appendBytes = deflate(encoder.encode(appendStreamText));
-      const dict = page.node.context.obj({
-        Filter: PDFName.of('FlateDecode'),
-        Length: appendBytes.length,
-      });
-      const appendStream = PDFRawStream.of(dict, appendBytes);
-      const currentContents = page.node.get(PDFName.of('Contents'));
-
-      if (currentContents instanceof PDFArray) {
-        currentContents.push(page.node.context.register(appendStream));
-      } else if (currentContents) {
-        const arr = page.node.context.obj([currentContents, page.node.context.register(appendStream)]);
-        page.node.set(PDFName.of('Contents'), arr);
-      } else {
-        page.node.set(PDFName.of('Contents'), page.node.context.register(appendStream));
-      }
-      wasReplaced = true;
-    }
+    // If the text couldn't be replaced directly in the stream, we do nothing to preserve the original PDF.
 
     return await pdfDoc.save();
   }
