@@ -126,63 +126,58 @@ const SinglePageView: React.FC<{
   const renderWidth = Math.round(page.width * zoom);
   const renderHeight = Math.round(page.height * zoom);
 
-  const [pageModel, setPageModel] = useState<import('../../types/pdf').PDFPageModel | null>(null);
-
-  // Render page to canvas natively from Document Model
+  // Render page to canvas immediately (never blank)
   useEffect(() => {
-    if (!canvasRef.current || !pdfBytes || page.isBlank) return;
+    if (!canvasRef.current) return;
     let isCancelled = false;
 
     const render = async () => {
-      // 1. Parse into TRUE Document Model
-      const { PdfStreamEditor } = await import('../../services/pdfStreamEditor');
-      const model = await PdfStreamEditor.parsePageToModel(pdfBytes, page.originalPageIndex);
-      if (isCancelled) return;
-      setPageModel(model);
-
-      const c = canvasRef.current;
-      if (!c) return;
-      c.width = renderWidth;
-      c.height = renderHeight;
-      c.style.width = `${renderWidth}px`;
-      c.style.height = `${renderHeight}px`;
-      const ctx = c.getContext('2d');
-      if (!ctx) return;
-
-      // 2. Render from Document Model
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, renderWidth, renderHeight);
-
-      // Coordinate transform: PDF is bottom-left, Canvas is top-left
-      ctx.save();
-      // Apply zoom
-      ctx.scale(zoom, zoom);
-
-      model.elements.forEach(el => {
-        if (el.type === 'text') {
-          const textEl = el as import('../../types/pdf').TextElement;
-          ctx.save();
-          
-          // PDF coordinates have origin at bottom-left.
-          // Transform matrix: [a, b, c, d, e, f]
-          // Canvas uses [a, b, c, d, e, f] but we need to invert Y.
-          // For simplicity in this phase, we use the parsed top-left position we extracted.
-          const pdfY = model.height - textEl.position.y - textEl.fontSize;
-          
-          ctx.font = `${textEl.fontSize}px ${textEl.fontName}, sans-serif`;
-          ctx.fillStyle = textEl.fillColor ? `rgb(${textEl.fillColor.r}, ${textEl.fillColor.g}, ${textEl.fillColor.b})` : '#000000';
-          
-          // In a real implementation we apply textEl.transform matrix
-          ctx.fillText(textEl.text, textEl.position.x, textEl.position.y);
-          
-          ctx.restore();
-        } else if (el.type === 'image') {
-          // Render image placeholder or actual extracted image
-        } else if (el.type === 'path') {
-          // Render paths
+      if (page.isBlank) {
+        const c = canvasRef.current;
+        if (!c) return;
+        c.width = renderWidth;
+        c.height = renderHeight;
+        c.style.width = `${renderWidth}px`;
+        c.style.height = `${renderHeight}px`;
+        const ctx = c.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, renderWidth, renderHeight);
         }
-      });
-      ctx.restore();
+        return;
+      }
+
+      if (page.customBytes) {
+        try {
+          const extDoc = await pdfjsLib.getDocument({ data: new Uint8Array(page.customBytes) }).promise;
+          if (!isCancelled && canvasRef.current) {
+            await PdfRenderService.renderPageToCanvas(
+              extDoc,
+              page.originalPageIndex + 1,
+              canvasRef.current,
+              zoom,
+              page.rotation
+            );
+          }
+        } catch (e) {
+          console.error('Error rendering custom page in canvas:', e);
+        }
+        return;
+      }
+
+      if (pdfProxy && canvasRef.current) {
+        try {
+          await PdfRenderService.renderPageToCanvas(
+            pdfProxy,
+            page.originalPageIndex + 1,
+            canvasRef.current,
+            zoom,
+            page.rotation
+          );
+        } catch (e) {
+          console.error('Error rendering page in canvas:', e);
+        }
+      }
     };
 
     render();
@@ -190,7 +185,8 @@ const SinglePageView: React.FC<{
     return () => {
       isCancelled = true;
     };
-  }, [pdfBytes, page, zoom, renderWidth, renderHeight]);
+  }, [pdfProxy, page, zoom, renderWidth, renderHeight]);
+
   // Extract page text items for live in-place direct editing
   useEffect(() => {
     if (!pdfProxy || page.isBlank || page.customBytes) return;
