@@ -436,20 +436,31 @@ export class PdfStreamEditor {
       }
     }
 
-    // 6. Safe Stream Injection for Custom/Complex Font Subsets:
-    // If the font glyphs were embedded as custom unmapped subsets, inject real native text operator into the stream
+    // 6. Safe Stream Injection Fallback:
+    // If the text couldn't be replaced directly in the stream, we must cover the old text 
+    // with a white rectangle and write the new text on top.
     if (!wasReplaced && fallbackCoords) {
       const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const font = helvetica;
+      const font = helvetica; // Ideally we look up fallbackCoords.fontName, but pdf-lib can't easily reuse embedded fonts for new text if they are subsetted.
       const fontSize = fallbackCoords.fontSize || 12;
       const pdfY = page.getHeight() - fallbackCoords.y - fontSize;
+      
+      // Approximate width of old text to cover it up
+      const approxWidth = oldText.length * fontSize * 0.6;
+      const bgHeight = fontSize * 1.2;
+      const bgY = pdfY - (fontSize * 0.2); // slight offset down
 
       const appendStreamText = `
 q
+% --- Fallback coverup ---
+1 1 1 rg
+${fallbackCoords.x} ${bgY} ${approxWidth} ${bgHeight} re
+f
+% --- New Text ---
 BT
 /${font.name} ${fontSize} Tf
-1 0 0 1 ${fallbackCoords.x} ${Math.max(pdfY, 0)} Tm
 0 0 0 rg
+1 0 0 1 ${fallbackCoords.x} ${Math.max(pdfY, 0)} Tm
 (${escapePdfString(newText)}) Tj
 ET
 Q
