@@ -284,3 +284,99 @@ export interface RebuiltPage {
   imageElements: RebuiltImageElement[];
   vectorElements: RebuiltVectorElement[];
 }
+
+// --- NEW TRUE WYSIWYG DOCUMENT MODEL ---
+
+export type PDFOperation = {
+  fn: string;
+  args: any[];
+};
+
+export interface Color {
+  r: number;
+  g: number;
+  b: number;
+}
+
+export type Matrix = [number, number, number, number, number, number];
+
+export interface BaseElement {
+  id: string;
+  sourcePage: number;
+  transform: Matrix;
+  originalOperations?: PDFOperation[];
+  // Bounding box in local space
+  localBoundingBox?: { x: number; y: number; width: number; height: number };
+}
+
+export interface TextElement extends BaseElement {
+  type: 'text';
+  text: string;
+  fontId: string;
+  fontName: string;
+  fontSize: number;
+  fillColor?: Color;
+  strokeColor?: Color;
+  characterSpacing?: number;
+  wordSpacing?: number;
+  horizontalScale?: number;
+  position: Point; // Offset after transform
+}
+
+export interface ImageElement extends BaseElement {
+  type: 'image';
+  imageId: string;
+  opacity?: number;
+  width: number;
+  height: number;
+}
+
+export interface PathCommand {
+  type: 'move' | 'line' | 'curve' | 'close' | 'rect';
+  points: Point[];
+}
+
+export interface PathElement extends BaseElement {
+  type: 'path';
+  commands: PathCommand[];
+  fill?: Color;
+  stroke?: Color;
+  lineWidth?: number;
+}
+
+export interface ShapeElement extends BaseElement {
+  type: 'shape';
+  shapeType: 'rect' | 'circle' | 'ellipse' | 'line';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fill?: Color;
+  stroke?: Color;
+  lineWidth?: number;
+}
+
+export interface GroupElement extends BaseElement {
+  type: 'group';
+  children: PDFElement[];
+}
+
+export type PDFElement =
+  | TextElement
+  | ImageElement
+  | PathElement
+  | ShapeElement
+  | GroupElement;
+
+export interface PDFPageModel {
+  pageIndex: number;
+  width: number;
+  height: number;
+  rotation: number;
+  elements: PDFElement[];
+}
+
+export interface PDFDocumentModel {
+  pages: PDFPageModel[];
+  metadata: PdfMetadata;
+}
